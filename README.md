@@ -78,5 +78,5 @@ The smoke script tests the full pipeline: content generation, optional image gen
 ## Troubleshooting
 
 - **401 Unauthorized from Canva**: Canva token has expired. Revisit [http://127.0.0.1:8000](http://127.0.0.1:8000), click **Connect Canva** again, and retry generation.
-- **Canva import failed**: The PPTX may be incompatible with the Canva API. Download the generated PPTX file from the `output/` directory and manually drag it into a Canva design—all content will import correctly.
+- **Canva import failed**: The PPTX may be incompatible with the Canva API. Use the Download PPTX link shown in the app (files are saved in the `out/` directory) and manually drag it into a Canva design—all content will import correctly.
 - **Image generation warnings or fallback to palette background**: The DALL-E request failed (rate limit, API issue, or model unavailability). The poster is still generated with a solid color background derived from the color palette. Regenerate or manually add an image in Canva.
