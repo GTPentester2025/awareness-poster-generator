@@ -1,5 +1,6 @@
 import os
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
@@ -7,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from app import artwork, builder, canva, content, design, envfile
+from app import artwork, builder, canva, content, design, envfile, knowledge
 from app.config import load_settings
 
 app = FastAPI(title="Awareness Poster Generator")
@@ -38,12 +39,10 @@ class ConfigRequest(BaseModel):
     canva_client_secret: str | None = None
 
 
-def _plan_uses_image(plan: dict) -> bool:
-    """True when the layout wants the background artwork, so we only pay for
+def _plan_uses_image(spec: dict) -> bool:
+    """True when the chosen style uses background artwork, so we only pay for
     image generation when the design actually places one."""
-    if plan.get("background", {}).get("mode") in ("image_full", "image_panel"):
-        return True
-    return any(el.get("type") == "image" for el in plan.get("elements", []))
+    return spec.get("background_style") == "image"
 
 
 def _config_status() -> dict:
@@ -111,37 +110,75 @@ def auth_callback(
     return RedirectResponse("/")
 
 
-@app.post("/api/posters")
-def create_poster(req: PosterRequest):
+def _make_option(variant: dict, spec: dict, orientation: str) -> dict:
+    """Build one poster option end-to-end: image (if styled) → render → import.
+    Never raises — failures degrade into warnings/downloads so sibling options
+    still ship."""
     warnings: list[str] = []
-    data = content.generate(req.topic, settings)
-
-    try:
-        plan = design.generate(data, req.orientation, settings)
-        image = None
-        if _plan_uses_image(plan):
-            image = artwork.generate(data["image_prompt"], req.orientation, settings)
-            if image is None:
-                warnings.append("Background image generation failed — used a solid background instead.")
-        pptx = builder.render(plan, image, req.orientation, settings.out_dir)
-    except Exception as e:
-        warnings.append(f"AI layout generation failed ({e}) — used the standard layout instead.")
-        image = artwork.generate(data["image_prompt"], req.orientation, settings)
+    image = None
+    if _plan_uses_image(spec):
+        image = artwork.generate(spec["image_prompt"], orientation, settings)
         if image is None:
-            warnings.append("Background image generation failed — used palette background instead.")
-        pptx = builder.fallback_build(data, image, req.orientation, settings.out_dir)
+            warnings.append("Background image failed — solid background used.")
+    try:
+        pptx = builder.render(spec, variant, image, orientation, settings.out_dir)
+    except Exception as e:
+        warnings.append(f"Layout render failed ({e}) — standard layout used.")
+        pptx = builder.fallback_build(content.to_legacy(variant), image, orientation, settings.out_dir)
 
     edit_url = None
     pptx_download = None
     try:
-        edit_url = canva.import_design(settings, pptx, data["headline"])
-    except canva.NotAuthenticated:
-        raise HTTPException(401, "Canva not connected — click Connect Canva first")
+        edit_url = canva.import_design(settings, pptx, variant["headline"])
     except canva.CanvaError as e:
-        warnings.append(f"Canva import failed ({e}) — download the PPTX and import manually.")
+        warnings.append(f"Canva import failed ({e}) — download the PPTX instead.")
         pptx_download = f"/api/download/{pptx.name}"
 
-    return {"edit_url": edit_url, "content": data, "warnings": warnings, "pptx_download": pptx_download}
+    return {
+        "content": variant,
+        "archetype": spec.get("archetype"),
+        "edit_url": edit_url,
+        "warnings": warnings,
+        "pptx_download": pptx_download,
+    }
+
+
+@app.post("/api/posters")
+def create_poster(req: PosterRequest):
+    if not settings.token_path.exists():
+        raise HTTPException(401, "Canva not connected — click Connect Canva first")
+
+    docs = knowledge.retrieve(req.topic)
+    variants = content.generate(req.topic, settings, knowledge_docs=docs)
+
+    try:
+        specs = design.generate_directions(variants, req.orientation, settings)
+    except Exception:
+        specs = None
+
+    if specs is None:
+        # art direction failed entirely — ship one safe poster rather than nothing
+        image = artwork.generate("awareness poster background, abstract, no text",
+                                 req.orientation, settings)
+        pptx = builder.fallback_build(content.to_legacy(variants[0]), image,
+                                      req.orientation, settings.out_dir)
+        option = {"content": variants[0], "archetype": "standard", "edit_url": None,
+                  "warnings": ["AI art direction failed — standard layout used."],
+                  "pptx_download": None}
+        try:
+            option["edit_url"] = canva.import_design(settings, pptx, variants[0]["headline"])
+        except canva.CanvaError as e:
+            option["warnings"].append(f"Canva import failed ({e}).")
+            option["pptx_download"] = f"/api/download/{pptx.name}"
+        return {"options": [option], "knowledge_used": [d["title"] for d in docs]}
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        options = list(pool.map(
+            lambda pair: _make_option(pair[0], pair[1], req.orientation),
+            zip(variants, specs),
+        ))
+
+    return {"options": options, "knowledge_used": [d["title"] for d in docs]}
 
 
 @app.get("/api/download/{filename}")

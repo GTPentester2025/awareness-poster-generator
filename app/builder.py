@@ -78,49 +78,309 @@ def _add_auto_shape(slide, shape_name, x, y, w, h, hex_color, opacity=1.0):
     return shp
 
 
-def render(plan: dict, image: Path | None, orientation: str, out_dir: Path) -> Path:
-    """Render a free-form LayoutPlan (from app.design) into an editable PPTX.
-    Draws background per plan, then each element in array order (later on top)."""
+def _readable(hex_str: str) -> str:
+    """Pick black or white text for legibility on the given background color."""
+    hs = hex_str.lstrip("#")
+    r, g, b = int(hs[0:2], 16), int(hs[2:4], 16), int(hs[4:6], 16)
+    return "#12161C" if (0.299 * r + 0.587 * g + 0.114 * b) > 150 else "#FFFFFF"
+
+
+def _fit(base_pt: int, text: str, comfortable_chars: int) -> int:
+    """Shrink a font size for long text so it stays inside its box instead of
+    overflowing (python-pptx does no auto-fit). Never below 60% of base."""
+    n = len(text)
+    if n <= comfortable_chars:
+        return base_pt
+    scale = max(0.6, comfortable_chars / n)
+    return max(9, int(base_pt * scale))
+
+
+def _rounded(slide, x, y, w, h, hex_fill, opacity=1.0, line_hex=None):
+    from pptx.enum.shapes import MSO_SHAPE
+    shp = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+                                 Emu(int(x)), Emu(int(y)), Emu(int(max(w, 1))), Emu(int(max(h, 1))))
+    if opacity <= 0:
+        shp.fill.background()
+    else:
+        shp.fill.solid()
+        shp.fill.fore_color.rgb = _rgb(hex_fill)
+        if opacity < 1:
+            _set_fill_alpha(shp, int(round((1 - opacity) * 100)))
+    if line_hex:
+        shp.line.color.rgb = _rgb(line_hex)
+        shp.line.width = Emu(19050)
+    else:
+        shp.line.fill.background()
+    return shp
+
+
+def _scrim(slide, x, y, w, h, hex_color, opacity):
+    """Translucent overlay so text stays legible over imagery."""
+    _add_rect(slide, int(x), int(y), int(w), int(h), hex_color,
+              transparency_pct=int(round((1 - opacity) * 100)))
+
+
+def _pic_cover(slide, image, x, y, w, h):
+    slide.shapes.add_picture(str(image), Emu(int(x)), Emu(int(y)), Emu(int(w)), Emu(int(h)))
+
+
+def _draw_headline(slide, x, y, w, h, text, spec, color, size_pt, align="left", panel=False):
+    pal, hs = spec["palette"], spec["header_style"]
+    if panel:
+        # solid band behind the headline so it never fights a busy image
+        _add_rect(slide, int(x - w * 0.02), int(y - h * 0.12), int(w * 1.04), int(h * 1.3),
+                  pal["bg"], transparency_pct=18)
+    if hs == "underline":
+        _add_rect(slide, int(x), int(y + h * 0.92), int(w * 0.32), max(int(h * 0.05), 30000), pal["accent"])
+    elif hs == "block":
+        _add_rect(slide, int(x), int(y + h * 0.05), int(w * 0.02), int(h * 0.8), pal["accent"])
+        x = x + int(w * 0.045)
+        w = w - int(w * 0.045)
+    elif hs == "badge":
+        _rounded(slide, int(x), int(y), int(w * 0.28), int(h * 0.22), pal["accent"])
+    _add_text(slide, int(x), int(y), int(w), int(h), text, _fit(size_pt, text, 26), color,
+              bold=True, align=_ALIGN_MAP.get(align, PP_ALIGN.LEFT), font=spec["fonts"]["heading"])
+
+
+def _card(slide, x, y, w, h, spec, stat, text):
+    pal, style = spec["palette"], spec["card_style"]
+    surface, accent = pal["surface"], pal["accent"]
+    pad = int(min(w, h) * 0.08)
+    if style == "soft_shadow":
+        off = int(min(w, h) * 0.04)
+        _rounded(slide, x + off, y + off, w, h, pal["muted"], opacity=0.35)
+        _rounded(slide, x, y, w, h, surface, opacity=1.0)
+    elif style == "outline":
+        _rounded(slide, x, y, w, h, surface, opacity=0.14, line_hex=accent)
+    else:  # filled
+        _rounded(slide, x, y, w, h, surface, opacity=1.0)
+    text_color = _readable(surface)
+    # badge with the stat/number
+    badge = int(min(h * 0.62, w * 0.22))
+    bx, by = x + pad, y + (h - badge) // 2
+    _add_auto_shape(slide, "ellipse", bx, by, badge, badge, accent)
+    _add_text(slide, bx, by + int(badge * 0.18), badge, int(badge * 0.7), str(stat),
+              _fit(13, str(stat), 6), _readable(accent), bold=True, align=PP_ALIGN.CENTER,
+              font=spec["fonts"]["heading"])
+    tx = bx + badge + pad
+    _add_text(slide, tx, y + pad, x + w - tx - pad, h - 2 * pad, text,
+              _fit(14, text, 70), text_color, align=PP_ALIGN.LEFT, font=spec["fonts"]["body"])
+
+
+def _draw_facts(slide, x, y, w, h, facts, stats, spec, cols):
+    n = len(facts)
+    if n == 0:
+        return
+    cols = max(1, min(cols, n))
+    rows = (n + cols - 1) // cols
+    gap = int(min(w, h) * 0.04)
+    cw = (w - (cols - 1) * gap) // cols
+    ch = (h - (rows - 1) * gap) // rows
+    for i, fact in enumerate(facts):
+        r, c = divmod(i, cols)
+        cx = x + c * (cw + gap)
+        cy = y + r * (ch + gap)
+        stat = stats[i] if i < len(stats) and str(stats[i]).strip() else str(i + 1)
+        _card(slide, cx, cy, cw, ch, spec, stat, fact)
+
+
+def _draw_cta(slide, x, y, w, h, text, spec):
+    pal = spec["palette"]
+    _rounded(slide, x, y, w, h, pal["accent"], opacity=1.0)
+    _add_text(slide, x, int(y + h * 0.26), w, int(h * 0.5), text, _fit(22, text, 34),
+              _readable(pal["accent"]), bold=True, align=PP_ALIGN.CENTER, font=spec["fonts"]["heading"])
+
+
+def _decor(slide, w, h, spec):
+    """Fill non-image backgrounds with depth: a gradient-look wash plus accent
+    blobs, so 'gradient'/'solid' posters stop rendering as one flat colour."""
+    pal = spec["palette"]
+    if spec["background_style"] == "gradient":
+        _add_rect(slide, 0, 0, w, int(h * 0.55), pal["accent"], transparency_pct=78)
+        _add_rect(slide, 0, int(h * 0.55), w, int(h * 0.2), pal["accent"], transparency_pct=90)
+    if spec.get("accent_shapes", True):
+        _add_auto_shape(slide, "ellipse", int(w * 0.72), int(-h * 0.06), int(w * 0.42), int(w * 0.42),
+                        pal["accent"], opacity=0.16)
+        _add_auto_shape(slide, "ellipse", int(-w * 0.12), int(h * 0.78), int(w * 0.34), int(w * 0.34),
+                        pal["accent"], opacity=0.12)
+        for i in range(4):
+            _add_auto_shape(slide, "ellipse", int(w * 0.06) + i * int(w * 0.025), int(h * 0.955),
+                            int(w * 0.01), int(w * 0.01), pal["accent"], opacity=0.8)
+
+
+def _draw_sources(slide, w, h, sources, spec, on_dark_bg):
+    if not sources:
+        return
+    color = "#E8E8E8" if on_dark_bg else "#5A6472"
+    _add_text(slide, int(w * 0.06), int(h * 0.965), int(w * 0.88), int(h * 0.03),
+              "Sources: " + " · ".join(sources), 8, color, font=spec["fonts"]["body"])
+
+
+def render(spec: dict, content: dict, image: Path | None, orientation: str, out_dir: Path) -> Path:
+    """Render a StyleSpec (from app.design) + a content variant into an
+    editable PPTX. Geometry is computed here per archetype, so output is
+    always clean and full."""
     if orientation not in A4_EMU:
         raise ValueError(f"orientation must be one of {sorted(A4_EMU)}")
     w, h = A4_EMU[orientation]
-    pal = plan["palette"]
-    bg = plan.get("background", {"mode": "solid"})
-    mode = bg.get("mode", "solid")
+    pal = spec["palette"]
+    points = content.get("points")
+    if points:
+        facts = [p["text"] for p in points]
+        stats = [p["stat"] for p in points]
+    else:  # legacy content shape
+        facts = content["facts"]
+        stats = spec.get("fact_stats", [])
+    sources = content.get("sources", [])
+    arch = spec["archetype"]
+    has_img = spec["background_style"] == "image" and image is not None
+    m = int(w * 0.06)
+    landscape = orientation == "landscape"
 
     prs = Presentation()
     prs.slide_width = Emu(w)
     prs.slide_height = Emu(h)
     slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    _add_rect(slide, 0, 0, w, h, pal["bg"])  # base
+    if not has_img:
+        _decor(slide, w, h, spec)
 
-    def rect(el):
-        return (int(el["x"] * w), int(el["y"] * h), int(el["w"] * w), int(el["h"] * h))
+    if arch == "hero_top":
+        ih = int(h * 0.44)
+        if has_img:
+            _pic_cover(slide, image, 0, 0, w, ih)
+            _scrim(slide, 0, 0, w, ih, pal["bg"], 0.35)
+            _scrim(slide, 0, int(ih * 0.45), w, int(ih * 0.55), pal["bg"], 0.45)
+            head_color = "#FFFFFF"
+        else:
+            _add_rect(slide, 0, 0, w, ih, pal["accent"])
+            head_color = _readable(pal["accent"])
+        _draw_headline(slide, m, int(h * 0.27), w - 2 * m, int(h * 0.14), content["headline"],
+                       spec, head_color, 42 if not landscape else 34, "left", panel=has_img)
+        _add_text(slide, m, int(h * 0.47), w - 2 * m, int(h * 0.06), content["subheadline"],
+                  _fit(18, content["subheadline"], 60), _readable(pal["bg"]), font=spec["fonts"]["body"])
+        _draw_facts(slide, m, int(h * 0.55), w - 2 * m, int(h * 0.30), facts, stats, spec,
+                    cols=2 if (landscape or len(facts) > 3) else 1)
+        _draw_cta(slide, m, int(h * 0.88), w - 2 * m, int(h * 0.09), content["cta"], spec)
 
-    # ---- background ----
-    if mode == "image_full" and image is not None:
-        slide.shapes.add_picture(str(image), 0, 0, Emu(w), Emu(h))
-    elif mode == "image_panel" and image is not None:
-        _add_rect(slide, 0, 0, w, h, pal["bg"])
-        panel = bg.get("panel") if isinstance(bg.get("panel"), dict) else {"x": 0.5, "y": 0, "w": 0.5, "h": 1}
-        px, py, pw, ph = rect({"x": panel.get("x", 0.5), "y": panel.get("y", 0),
-                               "w": panel.get("w", 0.5), "h": panel.get("h", 1)})
-        slide.shapes.add_picture(str(image), Emu(px), Emu(py), Emu(pw), Emu(ph))
-    else:
-        # solid (also the fallback for gradient and for image modes with no image)
-        _add_rect(slide, 0, 0, w, h, pal["bg"])
+    elif arch == "sidebar":
+        pw = int(w * 0.4)
+        if has_img:
+            _pic_cover(slide, image, 0, 0, pw, h)
+            _scrim(slide, 0, 0, pw, h, pal["bg"], 0.6)
+            head_color = "#FFFFFF"
+        else:
+            _add_rect(slide, 0, 0, pw, h, pal["accent"])
+            head_color = _readable(pal["accent"])
+        _draw_headline(slide, int(w * 0.05), int(h * 0.08), int(w * 0.3), int(h * 0.34),
+                       content["headline"], spec, head_color, 34, "left")
+        _draw_cta(slide, int(w * 0.05), int(h * 0.82), int(w * 0.3), int(h * 0.1), content["cta"], spec)
+        _add_text(slide, int(w * 0.44), int(h * 0.08), int(w * 0.5), int(h * 0.1), content["subheadline"],
+                  18, _readable(pal["bg"]), font=spec["fonts"]["body"])
+        _draw_facts(slide, int(w * 0.44), int(h * 0.22), int(w * 0.5), int(h * 0.64), facts, stats, spec,
+                    cols=2 if landscape else 1)
 
-    # ---- elements ----
-    for el in plan["elements"]:
-        ex, ey, ew, eh = rect(el)
-        if el["type"] == "text":
-            _add_text(slide, ex, ey, ew, eh, el["text"], el["size_pt"], el["color"],
-                      bold=(el["weight"] == "bold"),
-                      align=_ALIGN_MAP.get(el["align"], PP_ALIGN.LEFT),
-                      font=el["font"])
-        elif el["type"] == "shape":
-            _add_auto_shape(slide, el["shape"], ex, ey, ew, eh, el["color"], el.get("opacity", 1.0))
-        elif el["type"] == "image" and image is not None:
-            slide.shapes.add_picture(str(image), Emu(ex), Emu(ey), Emu(ew), Emu(eh))
+    elif arch == "banner_header":
+        if has_img:
+            _pic_cover(slide, image, 0, 0, w, h)
+            _scrim(slide, 0, 0, w, h, pal["bg"], 0.68)
+        bh = int(h * 0.2)
+        _add_rect(slide, 0, 0, w, bh, pal["accent"])
+        _draw_headline(slide, m, int(h * 0.03), w - 2 * m, int(h * 0.1), content["headline"],
+                       spec, _readable(pal["accent"]), 38 if not landscape else 32, "center")
+        _add_text(slide, m, int(h * 0.135), w - 2 * m, int(h * 0.05), content["subheadline"],
+                  16, _readable(pal["accent"]), align=PP_ALIGN.CENTER, font=spec["fonts"]["body"])
+        _draw_facts(slide, m, int(h * 0.25), w - 2 * m, int(h * 0.55), facts, stats, spec, cols=2)
+        _draw_cta(slide, 0, int(h * 0.85), w, int(h * 0.15), content["cta"], spec)
+
+    elif arch == "centered_feature":
+        if has_img:
+            _pic_cover(slide, image, 0, 0, w, h)
+            _scrim(slide, 0, 0, w, h, pal["bg"], 0.68)
+        elif spec["accent_shapes"]:
+            _add_auto_shape(slide, "ellipse", int(w * 0.55), int(-h * 0.1), int(w * 0.6), int(w * 0.6),
+                            pal["accent"], opacity=0.25)
+        _draw_headline(slide, m, int(h * 0.26), w - 2 * m, int(h * 0.2), content["headline"],
+                       spec, "#FFFFFF" if has_img else _readable(pal["bg"]),
+                       50 if not landscape else 40, "center", panel=has_img)
+        _add_text(slide, m, int(h * 0.48), w - 2 * m, int(h * 0.07), content["subheadline"],
+                  18, "#FFFFFF" if has_img else _readable(pal["bg"]), align=PP_ALIGN.CENTER,
+                  font=spec["fonts"]["body"])
+        _draw_facts(slide, m, int(h * 0.58), w - 2 * m, int(h * 0.24), facts, stats, spec,
+                    cols=min(len(facts), 3) if landscape else 1)
+        _draw_cta(slide, int(w * 0.25), int(h * 0.86), int(w * 0.5), int(h * 0.09), content["cta"], spec)
+
+    elif arch == "big_number":
+        # lead stat becomes the poster's hero element
+        if has_img:
+            _pic_cover(slide, image, 0, 0, w, h)
+            _scrim(slide, 0, 0, w, h, pal["bg"], 0.68)
+        base_color = "#FFFFFF" if has_img else _readable(pal["bg"])
+        lead = stats[0] if stats else "!"
+        _add_text(slide, m, int(h * 0.05), w - 2 * m, int(h * 0.2), str(lead), 110 if not landscape else 90,
+                  pal["accent"], bold=True, align=PP_ALIGN.LEFT, font=spec["fonts"]["heading"])
+        _draw_headline(slide, m, int(h * 0.26), w - 2 * m, int(h * 0.12), content["headline"],
+                       spec, base_color, 38 if not landscape else 32, "left")
+        _add_text(slide, m, int(h * 0.39), w - 2 * m, int(h * 0.05), content["subheadline"],
+                  16, base_color, font=spec["fonts"]["body"])
+        # the hero stat's own point text stays visible as the lead line
+        _add_text(slide, m, int(h * 0.445), w - 2 * m, int(h * 0.05), facts[0],
+                  15, pal["accent"] if not has_img else "#FFFFFF", bold=True,
+                  font=spec["fonts"]["body"])
+        rest = list(zip(facts, stats))[1:] if len(facts) > 1 else list(zip(facts, stats))
+        _draw_facts(slide, m, int(h * 0.51), w - 2 * m, int(h * 0.33),
+                    [f for f, _ in rest], [s for _, s in rest], spec,
+                    cols=2 if (landscape or len(rest) > 3) else 1)
+        _draw_cta(slide, m, int(h * 0.87), w - 2 * m, int(h * 0.09), content["cta"], spec)
+
+    elif arch == "steps_path":
+        # numbered path down the page with a connecting spine — fits checklists/steps
+        if has_img:
+            _pic_cover(slide, image, 0, 0, w, h)
+            _scrim(slide, 0, 0, w, h, pal["bg"], 0.72)
+        base_color = "#FFFFFF" if has_img else _readable(pal["bg"])
+        _draw_headline(slide, m, int(h * 0.05), w - 2 * m, int(h * 0.1), content["headline"],
+                       spec, base_color, 36 if not landscape else 30, "left")
+        _add_text(slide, m, int(h * 0.155), w - 2 * m, int(h * 0.05), content["subheadline"],
+                  15, base_color, font=spec["fonts"]["body"])
+        top, bottom = int(h * 0.24), int(h * 0.84)
+        n = len(facts)
+        spine_x = m + int(w * 0.045)
+        _add_rect(slide, spine_x - 15000, top, 30000, bottom - top - int((bottom - top) / max(n, 1) * 0.35),
+                  pal["accent"])
+        row = (bottom - top) // max(n, 1)
+        badge = int(min(row * 0.6, w * 0.09))
+        for i, fact in enumerate(facts):
+            cy = top + i * row
+            _add_auto_shape(slide, "ellipse", spine_x - badge // 2, cy, badge, badge, pal["accent"])
+            _add_text(slide, spine_x - badge // 2, cy + int(badge * 0.2), badge, int(badge * 0.6),
+                      str(i + 1), 14, _readable(pal["accent"]), bold=True, align=PP_ALIGN.CENTER,
+                      font=spec["fonts"]["heading"])
+            card_x = spine_x + badge
+            _card(slide, card_x, cy, w - m - card_x, int(row * 0.85), spec,
+                  stats[i] if i < len(stats) else str(i + 1), fact)
+        _draw_cta(slide, m, int(h * 0.88), w - 2 * m, int(h * 0.08), content["cta"], spec)
+
+    else:  # split_band — full-height image band beside a content column
+        band = int(w * 0.46)
+        cx0 = band + m // 2  # content column start
+        if has_img:
+            _pic_cover(slide, image, 0, 0, band, h)
+            _scrim(slide, 0, int(h * 0.7), band, int(h * 0.3), pal["bg"], 0.6)
+        else:
+            _add_rect(slide, 0, 0, band, h, pal["accent"])
+            if spec["accent_shapes"]:
+                _add_auto_shape(slide, "ellipse", int(band * 0.2), int(h * 0.35), int(band * 0.6),
+                                int(band * 0.6), pal["bg"], opacity=0.3)
+        base_color = _readable(pal["bg"])
+        _draw_headline(slide, cx0, int(h * 0.07), w - cx0 - m, int(h * 0.16), content["headline"],
+                       spec, base_color, 34 if not landscape else 30, "left")
+        _add_text(slide, cx0, int(h * 0.25), w - cx0 - m, int(h * 0.06), content["subheadline"],
+                  15, base_color, font=spec["fonts"]["body"])
+        _draw_facts(slide, cx0, int(h * 0.33), w - cx0 - m, int(h * 0.5), facts, stats, spec, cols=1)
+        _draw_cta(slide, cx0, int(h * 0.86), w - cx0 - m, int(h * 0.09), content["cta"], spec)
+
+    _draw_sources(slide, w, h, sources, spec, on_dark_bg=(has_img or _readable(pal["bg"]) == "#FFFFFF"))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"poster_{uuid.uuid4().hex[:8]}.pptx"

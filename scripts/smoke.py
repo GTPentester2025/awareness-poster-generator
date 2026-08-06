@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import artwork, builder, canva, content
+from app import artwork, builder, canva, content, design, knowledge
 from app.config import load_settings
 
 
@@ -16,21 +16,28 @@ def main():
     orientation = sys.argv[2] if len(sys.argv) > 2 else "portrait"
     settings = load_settings()
 
-    print(f"[1/4] content for: {topic!r}")
-    data = content.generate(topic, settings)
-    print(f"      headline: {data['headline']}")
+    print(f"[1/5] knowledge for: {topic!r}")
+    docs = knowledge.retrieve(topic)
+    print(f"      matched: {[d['title'] for d in docs] or 'none'}")
 
-    print("[2/4] background image")
-    image = artwork.generate(data["image_prompt"], orientation, settings)
-    print(f"      {'ok: ' + str(image) if image else 'FAILED — using fallback'}")
+    print("[2/5] content — 3 variants")
+    variants = content.generate(topic, settings, knowledge_docs=docs)
+    for v in variants:
+        print(f"      [{v['angle']}] {v['headline']} ({len(v['points'])} points)")
 
-    print("[3/4] building pptx")
-    pptx = builder.build(data, image, orientation, settings.out_dir)
-    print(f"      {pptx}")
+    print("[3/5] art direction — 3 distinct specs")
+    specs = design.generate_directions(variants, orientation, settings)
+    for s in specs:
+        print(f"      {s['archetype']} | bg={s['background_style']} | {s['fonts']['heading']}")
 
-    print("[4/4] importing to Canva")
-    url = canva.import_design(settings, pptx, data["headline"])
-    print(f"\nEDIT URL: {url}")
+    print("[4/5] render + [5/5] import per option")
+    for i, (variant, spec) in enumerate(zip(variants, specs), 1):
+        image = None
+        if spec["background_style"] == "image":
+            image = artwork.generate(spec["image_prompt"], orientation, settings)
+        pptx = builder.render(spec, variant, image, orientation, settings.out_dir)
+        url = canva.import_design(settings, pptx, variant["headline"])
+        print(f"      option {i}: {url}")
 
 
 if __name__ == "__main__":

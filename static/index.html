@@ -18,6 +18,9 @@
   button:disabled { opacity: 0.5; cursor: wait; }
   #connect { background: #fff; color: var(--ink); }
   #result { margin-top: 2rem; border-top: 2px solid var(--ink); padding-top: 1rem; }
+  .option { border: 2px solid var(--ink); background: #fff; padding: 1rem 1.2rem; margin: 1rem 0; }
+  .chip { display: inline-block; background: var(--ink); color: #fff; font-size: 0.75rem;
+          padding: 0.15rem 0.6rem; letter-spacing: 0.04em; }
   .warn { color: #8a5a00; }
   a.edit { display: inline-block; margin-top: 0.6rem; font-weight: bold; color: var(--accent); }
   ul { padding-left: 1.2rem; }
@@ -143,17 +146,26 @@ document.getElementById('form').onsubmit = async (e) => {
       return;
     }
     if (!resp.ok) { result.textContent = 'Error: ' + (body.detail ?? resp.status); return; }
-    const c = body.content;
-    const editUrl = body.edit_url && body.edit_url.startsWith('https://') ? body.edit_url : null;
-    const downloadUrl = body.pptx_download && body.pptx_download.startsWith('/api/download/') ? body.pptx_download : null;
+    const renderOption = (opt, i) => {
+      const c = opt.content;
+      const editUrl = opt.edit_url && opt.edit_url.startsWith('https://') ? opt.edit_url : null;
+      const downloadUrl = opt.pptx_download && opt.pptx_download.startsWith('/api/download/') ? opt.pptx_download : null;
+      return `
+        <section class="option">
+          <p class="chip">Option ${i + 1} · ${esc(c.angle || '')} · ${esc(opt.archetype || '')}</p>
+          <h2>${esc(c.headline)}</h2>
+          <p>${esc(c.subheadline)}</p>
+          <ul>${c.points.map(p => `<li><strong>${esc(p.stat)}</strong> — ${esc(p.text)}</li>`).join('')}</ul>
+          <p><strong>${esc(c.cta)}</strong></p>
+          ${(c.sources && c.sources.length) ? `<p class="hint">Sources: ${c.sources.map(esc).join(' · ')}</p>` : ''}
+          ${opt.warnings.map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
+          ${editUrl ? `<a class="edit" href="${esc(editUrl)}" target="_blank">Edit in Canva →</a>` : ''}
+          ${downloadUrl ? `<a class="edit" href="${esc(downloadUrl)}">Download PPTX</a>` : ''}
+        </section>`;
+    };
     result.innerHTML = `
-      <h2>${esc(c.headline)}</h2>
-      <p>${esc(c.subheadline)}</p>
-      <ul>${c.facts.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
-      <p><strong>${esc(c.cta)}</strong></p>
-      ${body.warnings.map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
-      ${editUrl ? `<a class="edit" href="${esc(editUrl)}" target="_blank">Edit in Canva →</a>` : ''}
-      ${downloadUrl ? `<a class="edit" href="${esc(downloadUrl)}">Download PPTX</a>` : ''}
+      ${body.knowledge_used && body.knowledge_used.length ? `<p class="hint">Grounded in: ${body.knowledge_used.map(esc).join(' · ')}</p>` : ''}
+      ${body.options.map(renderOption).join('')}
     `;
   } catch (err) {
     result.textContent = 'Request failed: ' + err;

@@ -6,14 +6,46 @@ from fastapi.testclient import TestClient
 
 import app.main as main
 from app import canva
-from tests.test_content import SETTINGS, VALID
+from tests.test_content import SETTINGS, VARIANTS
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     s = SETTINGS.__class__(**{**SETTINGS.__dict__, "out_dir": tmp_path, "token_path": tmp_path / "token.json"})
     monkeypatch.setattr(main, "settings", s)
+    monkeypatch.setattr(main.knowledge, "retrieve", lambda topic: [])
     return TestClient(main.app)
+
+
+def _connect(tmp_path):
+    (tmp_path / "token.json").write_text(json.dumps({
+        "access_token": "t", "refresh_token": "r", "expires_at": 9999999999,
+    }))
+
+
+_BASE_SPEC = {
+    "archetype": "hero_top",
+    "palette": {"bg": "#0E3A5D", "surface": "#FFFFFF", "accent": "#3EC1D3", "text": "#FFFFFF", "muted": "#9AA5B1"},
+    "fonts": {"heading": "Anton", "body": "Open Sans"},
+    "card_style": "filled", "header_style": "block", "accent_shapes": True,
+    "image_prompt": "x", "fact_stats": [],
+}
+SPECS = [
+    {**_BASE_SPEC, "archetype": "hero_top", "background_style": "solid"},
+    {**_BASE_SPEC, "archetype": "steps_path", "background_style": "solid"},
+    {**_BASE_SPEC, "archetype": "big_number", "background_style": "image"},
+]
+
+
+def _happy_mocks(monkeypatch, tmp_path):
+    fake_pptx = tmp_path / "poster_x.pptx"
+    fake_pptx.write_bytes(b"pptx")
+    monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, client=None: [dict(v) for v in VARIANTS])
+    monkeypatch.setattr(main.design, "generate_directions", lambda v, o, s, client=None: [dict(x) for x in SPECS])
+    monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
+    monkeypatch.setattr(main.builder, "render", lambda spec, variant, i, o, d: fake_pptx)
+    monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/d1")
+    return fake_pptx
 
 
 def test_status_disconnected(client):
@@ -26,107 +58,81 @@ def test_auth_redirects(client):
     assert r.headers["location"].startswith("https://www.canva.com/api/oauth/authorize?")
 
 
-FAKE_PLAN = {"palette": VALID["palette"], "background": {"mode": "image_full"}, "elements": []}
-SOLID_PLAN = {"palette": VALID["palette"], "background": {"mode": "solid"}, "elements": []}
-
-
-def test_poster_happy_path(client, monkeypatch, tmp_path):
-    fake_pptx = tmp_path / "poster_x.pptx"
-    fake_pptx.write_bytes(b"pptx")
-    monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
-    monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
-    monkeypatch.setattr(main.design, "generate", lambda c, o, s, client=None: dict(FAKE_PLAN))
-    monkeypatch.setattr(main.builder, "render", lambda plan, i, o, d: fake_pptx)
-    monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/d1")
+def test_poster_returns_three_options(client, monkeypatch, tmp_path):
+    _connect(tmp_path)
+    _happy_mocks(monkeypatch, tmp_path)
     r = client.post("/api/posters", json={"topic": "road safety", "orientation": "portrait"})
     body = r.json()
     assert r.status_code == 200
-    assert body["edit_url"] == "https://canva.com/edit/d1"
-    assert body["content"]["headline"] == VALID["headline"]
-    assert any("background" in w.lower() for w in body["warnings"])
+    assert len(body["options"]) == 3
+    archetypes = [o["archetype"] for o in body["options"]]
+    assert archetypes == ["hero_top", "steps_path", "big_number"]
+    assert body["options"][0]["edit_url"] == "https://canva.com/edit/d1"
+    assert body["options"][1]["content"]["angle"] == "impact"
+    # third spec wanted an image; artwork mock returned None → warning on that option only
+    assert any("image" in w.lower() for w in body["options"][2]["warnings"])
+    assert body["options"][0]["warnings"] == []
 
 
-def test_poster_solid_plan_skips_image(client, monkeypatch, tmp_path):
-    fake_pptx = tmp_path / "poster_s.pptx"
-    fake_pptx.write_bytes(b"pptx")
-    monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
-    monkeypatch.setattr(main.design, "generate", lambda c, o, s, client=None: dict(SOLID_PLAN))
-    monkeypatch.setattr(main.builder, "render", lambda plan, i, o, d: fake_pptx)
-    monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/s")
+def test_poster_not_connected_401_before_generation(client, monkeypatch):
+    called = {"content": False}
 
-    called = {"img": False}
+    def content_gen(*a, **kw):
+        called["content"] = True
+        return [dict(v) for v in VARIANTS]
 
-    def img(*a, **kw):
-        called["img"] = True
-        return None
-
-    monkeypatch.setattr(main.artwork, "generate", img)
-    body = client.post("/api/posters", json={"topic": "x", "orientation": "portrait"}).json()
-    assert called["img"] is False  # solid plan never triggers image generation
-    assert body["edit_url"] == "https://canva.com/edit/s"
-
-
-def test_poster_layout_fallback(client, monkeypatch, tmp_path):
-    fake_pptx = tmp_path / "poster_fb.pptx"
-    fake_pptx.write_bytes(b"pptx")
-    monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
-    monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
-
-    def boom(*a, **kw):
-        raise ValueError("layout design failed")
-
-    monkeypatch.setattr(main.design, "generate", boom)
-    called = {}
-
-    def fb(c, i, o, d):
-        called["yes"] = True
-        return fake_pptx
-
-    monkeypatch.setattr(main.builder, "fallback_build", fb)
-    monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/fb")
-    body = client.post("/api/posters", json={"topic": "x", "orientation": "portrait"}).json()
-    assert called.get("yes") is True
-    assert body["edit_url"] == "https://canva.com/edit/fb"
-    assert any("layout" in w.lower() for w in body["warnings"])
-
-
-def test_poster_import_failure_offers_download(client, monkeypatch, tmp_path):
-    fake_pptx = tmp_path / "poster_y.pptx"
-    fake_pptx.write_bytes(b"pptx")
-    monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
-    monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
-    monkeypatch.setattr(main.design, "generate", lambda c, o, s, client=None: dict(FAKE_PLAN))
-    monkeypatch.setattr(main.builder, "render", lambda plan, i, o, d: fake_pptx)
-
-    def boom(*a, **kw):
-        raise canva.ImportFailed("bad")
-
-    monkeypatch.setattr(main.canva, "import_design", boom)
-    body = client.post("/api/posters", json={"topic": "x", "orientation": "portrait"}).json()
-    assert body["edit_url"] is None
-    assert body["pptx_download"] == "/api/download/poster_y.pptx"
-    dl = client.get(body["pptx_download"])
-    assert dl.status_code == 200
-
-
-def test_poster_not_authenticated(client, monkeypatch):
-    monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
-    monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
-    monkeypatch.setattr(main.design, "generate", lambda c, o, s, client=None: dict(FAKE_PLAN))
-
-    def render(plan, i, o, d):
-        p = main.settings.out_dir / "poster_z.pptx"
-        p.write_bytes(b"pptx")
-        return p
-
-    monkeypatch.setattr(main.builder, "render", render)
-
-    def nope(*a, **kw):
-        raise canva.NotAuthenticated("no token")
-
-    monkeypatch.setattr(main.canva, "import_design", nope)
+    monkeypatch.setattr(main.content, "generate", content_gen)
     r = client.post("/api/posters", json={"topic": "x", "orientation": "portrait"})
     assert r.status_code == 401
+    assert called["content"] is False  # no OpenAI spend without Canva connection
+
+
+def test_poster_import_failure_isolated_to_option(client, monkeypatch, tmp_path):
+    _connect(tmp_path)
+    fake_pptx = _happy_mocks(monkeypatch, tmp_path)
+
+    calls = {"n": 0}
+
+    def import_flaky(s, p, t, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise canva.ImportFailed("bad")
+        return "https://canva.com/edit/ok"
+
+    monkeypatch.setattr(main.canva, "import_design", import_flaky)
+    body = client.post("/api/posters", json={"topic": "x", "orientation": "portrait"}).json()
+    oks = [o for o in body["options"] if o["edit_url"]]
+    failed = [o for o in body["options"] if not o["edit_url"]]
+    assert len(oks) == 2 and len(failed) == 1
+    assert failed[0]["pptx_download"] == f"/api/download/{fake_pptx.name}"
+
+
+def test_poster_direction_failure_falls_back_to_single(client, monkeypatch, tmp_path):
+    _connect(tmp_path)
+    fake_pptx = tmp_path / "poster_fb.pptx"
+    fake_pptx.write_bytes(b"pptx")
+    monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, client=None: [dict(v) for v in VARIANTS])
+
+    def boom(*a, **kw):
+        raise ValueError("style direction failed")
+
+    monkeypatch.setattr(main.design, "generate_directions", boom)
+    monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
+    monkeypatch.setattr(main.builder, "fallback_build", lambda c, i, o, d: fake_pptx)
+    monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/fb")
+    body = client.post("/api/posters", json={"topic": "x", "orientation": "portrait"}).json()
+    assert len(body["options"]) == 1
+    assert body["options"][0]["edit_url"] == "https://canva.com/edit/fb"
+    assert any("art direction" in w.lower() for w in body["options"][0]["warnings"])
+
+
+def test_knowledge_titles_reported(client, monkeypatch, tmp_path):
+    _connect(tmp_path)
+    _happy_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(main.knowledge, "retrieve",
+                        lambda topic: [{"title": "GDPR (EU)", "keywords": set(), "body": "x"}])
+    body = client.post("/api/posters", json={"topic": "gdpr", "orientation": "portrait"}).json()
+    assert body["knowledge_used"] == ["GDPR (EU)"]
 
 
 def test_bad_orientation_rejected(client):

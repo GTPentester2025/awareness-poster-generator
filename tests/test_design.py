@@ -1,10 +1,10 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from app import design
 from app.config import Settings
-from pathlib import Path
 
 SETTINGS = Settings(
     openai_api_key="sk-test", openai_text_model="gpt-4o-mini",
@@ -12,73 +12,75 @@ SETTINGS = Settings(
     base_url="http://127.0.0.1:8000", out_dir=Path("out"), token_path=Path("token.json"),
 )
 
-VALID_PLAN = {
-    "palette": {"bg": "#0E3A5D", "accent": "#3EC1D3", "text": "#FFFFFF"},
-    "font_heading": "Anton",
-    "font_body": "Open Sans",
-    "background": {"mode": "solid"},
-    "elements": [
-        {"type": "shape", "shape": "rect", "x": 0, "y": 0, "w": 1, "h": 0.2,
-         "color": "#3EC1D3", "opacity": 0.5},
-        {"type": "text", "text": "Save Water", "x": 0.1, "y": 0.05, "w": 0.8, "h": 0.15,
-         "font": "Anton", "size_pt": 54, "weight": "bold", "align": "center", "color": "#FFFFFF"},
-        {"type": "text", "text": "Every drop counts", "x": 0.1, "y": 0.3, "w": 0.8, "h": 0.1,
-         "font": "Open Sans", "size_pt": 20, "weight": "normal", "align": "left", "color": "#FFFFFF"},
-    ],
+VALID_SPEC = {
+    "archetype": "hero_top",
+    "palette": {"bg": "#0E3A5D", "surface": "#FFFFFF", "accent": "#3EC1D3",
+                "text": "#FFFFFF", "muted": "#9AA5B1"},
+    "fonts": {"heading": "Anton", "body": "Open Sans"},
+    "background_style": "image",
+    "card_style": "filled",
+    "header_style": "block",
+    "accent_shapes": True,
+    "image_prompt": "water drops, deep blue, minimal, no text",
+    "fact_stats": ["5,500L", "3%", "50L"],
 }
 
 
-def test_valid_plan_passes():
-    plan = design.validate_plan(json.loads(json.dumps(VALID_PLAN)))
-    assert plan["font_heading"] == "Anton"
-    assert len(plan["elements"]) == 3
+def test_valid_spec_passes():
+    s = design.validate_spec(json.loads(json.dumps(VALID_SPEC)))
+    assert s["archetype"] == "hero_top"
+    assert s["fonts"]["heading"] == "Anton"
+    assert s["fact_stats"] == ["5,500L", "3%", "50L"]
 
 
-def test_unknown_font_coerced_to_default():
-    bad = json.loads(json.dumps(VALID_PLAN))
-    bad["font_heading"] = "Comic Monstrosity"
-    bad["elements"][1]["font"] = "Nonexistent Font"
-    plan = design.validate_plan(bad)
-    assert plan["font_heading"] == design.DEFAULT_HEADING
-    assert plan["elements"][1]["font"] == design.DEFAULT_BODY
+def test_bad_archetype_defaults():
+    bad = {**VALID_SPEC, "archetype": "spiral"}
+    assert design.validate_spec(json.loads(json.dumps(bad)))["archetype"] == "hero_top"
 
 
-def test_out_of_range_coords_clamped():
-    bad = json.loads(json.dumps(VALID_PLAN))
-    bad["elements"][1]["x"] = 5.0
-    bad["elements"][1]["size_pt"] = 9999
-    plan = design.validate_plan(bad)
-    assert 0.0 <= plan["elements"][1]["x"] <= 1.0
-    assert plan["elements"][1]["size_pt"] <= 160
+def test_unknown_fonts_coerced():
+    bad = json.loads(json.dumps(VALID_SPEC))
+    bad["fonts"] = {"heading": "Wingdings3000", "body": "MadeUp"}
+    s = design.validate_spec(bad)
+    assert s["fonts"]["heading"] == design.DEFAULT_HEADING
+    assert s["fonts"]["body"] == design.DEFAULT_BODY
 
 
-def test_bad_background_mode_defaults_solid():
-    bad = json.loads(json.dumps(VALID_PLAN))
-    bad["background"] = {"mode": "hologram"}
-    plan = design.validate_plan(bad)
-    assert plan["background"]["mode"] == "solid"
+def test_missing_surface_and_muted_defaulted():
+    bad = json.loads(json.dumps(VALID_SPEC))
+    del bad["palette"]["surface"]
+    del bad["palette"]["muted"]
+    s = design.validate_spec(bad)
+    assert s["palette"]["surface"] == design.PALETTE_DEFAULTS["surface"]
+    assert s["palette"]["muted"] == design.PALETTE_DEFAULTS["muted"]
 
 
-def test_empty_text_element_dropped():
-    bad = json.loads(json.dumps(VALID_PLAN))
-    bad["elements"].append({"type": "text", "text": "   ", "x": 0.1, "y": 0.5, "w": 0.5, "h": 0.1})
-    plan = design.validate_plan(bad)
-    texts = [e for e in plan["elements"] if e["type"] == "text"]
-    assert len(texts) == 2  # blank one dropped
+@pytest.mark.parametrize("field,default", [
+    ("background_style", "image"), ("card_style", "filled"), ("header_style", "block"),
+])
+def test_bad_enum_fields_default(field, default):
+    bad = json.loads(json.dumps(VALID_SPEC))
+    bad[field] = "nonsense"
+    assert design.validate_spec(bad)[field] == default
 
 
-def test_no_text_raises():
-    bad = {"palette": VALID_PLAN["palette"], "background": {"mode": "solid"},
-           "elements": [{"type": "shape", "shape": "rect", "x": 0, "y": 0, "w": 1, "h": 1, "color": "#3EC1D3"}]}
-    with pytest.raises(ValueError):
-        design.validate_plan(bad)
-
-
-def test_bad_palette_raises():
-    bad = json.loads(json.dumps(VALID_PLAN))
+def test_bad_core_palette_raises():
+    bad = json.loads(json.dumps(VALID_SPEC))
     bad["palette"]["bg"] = "navy"
     with pytest.raises(ValueError):
-        design.validate_plan(bad)
+        design.validate_spec(bad)
+
+
+def test_fact_stats_non_list_becomes_empty():
+    bad = json.loads(json.dumps(VALID_SPEC))
+    bad["fact_stats"] = "oops"
+    assert design.validate_spec(bad)["fact_stats"] == []
+
+
+def test_missing_image_prompt_gets_fallback():
+    bad = json.loads(json.dumps(VALID_SPEC))
+    del bad["image_prompt"]
+    assert design.validate_spec(bad)["image_prompt"]
 
 
 class FakeCompletions:
@@ -100,27 +102,57 @@ class FakeClient:
         self.chat.completions = FakeCompletions(payloads)
 
 
-CONTENT = {
-    "headline": "Save Water", "subheadline": "Every drop counts",
-    "facts": ["a", "b", "c"], "cta": "Act now",
-    "palette": VALID_PLAN["palette"],
-}
+VARIANTS = [
+    {"angle": "precautions", "headline": "A", "subheadline": "a",
+     "points": [{"stat": "1", "text": "t1"}], "cta": "go", "sources": []},
+    {"angle": "stats", "headline": "B", "subheadline": "b",
+     "points": [{"stat": "2", "text": "t2"}], "cta": "go", "sources": []},
+    {"angle": "impact", "headline": "C", "subheadline": "c",
+     "points": [{"stat": "3", "text": "t3"}], "cta": "go", "sources": []},
+]
 
 
-def test_generate_returns_plan():
-    client = FakeClient([json.dumps(VALID_PLAN)])
-    plan = design.generate(CONTENT, "portrait", SETTINGS, client=client)
-    assert plan["elements"][1]["text"] == "Save Water"
+def _directions_payload(archetypes):
+    return json.dumps({"directions": [
+        {**json.loads(json.dumps(VALID_SPEC)), "archetype": a} for a in archetypes
+    ]})
 
 
-def test_generate_retries_then_succeeds():
-    client = FakeClient(["not json", json.dumps(VALID_PLAN)])
-    plan = design.generate(CONTENT, "portrait", SETTINGS, client=client)
+def test_validate_directions_distinct_kept():
+    data = json.loads(_directions_payload(["hero_top", "sidebar", "big_number"]))
+    specs = design.validate_directions(data)
+    assert [s["archetype"] for s in specs] == ["hero_top", "sidebar", "big_number"]
+
+
+def test_validate_directions_duplicates_reassigned():
+    data = json.loads(_directions_payload(["hero_top", "hero_top", "hero_top"]))
+    specs = design.validate_directions(data)
+    archs = [s["archetype"] for s in specs]
+    assert len(set(archs)) == 3
+    assert archs[0] == "hero_top"
+
+
+def test_validate_directions_wrong_count_raises():
+    data = json.loads(_directions_payload(["hero_top", "sidebar"]))
+    with pytest.raises(ValueError):
+        design.validate_directions(data)
+
+
+def test_generate_directions_returns_three():
+    client = FakeClient([_directions_payload(["hero_top", "steps_path", "split_band"])])
+    specs = design.generate_directions(VARIANTS, "portrait", SETTINGS, client=client)
+    assert len(specs) == 3
+    assert specs[1]["archetype"] == "steps_path"
+
+
+def test_generate_directions_retries_then_succeeds():
+    client = FakeClient(["not json", _directions_payload(["hero_top", "sidebar", "banner_header"])])
+    specs = design.generate_directions(VARIANTS, "portrait", SETTINGS, client=client)
     assert client.chat.completions.calls == 2
-    assert plan["palette"]["bg"] == "#0E3A5D"
+    assert len(specs) == 3
 
 
-def test_generate_fails_after_two_bad():
+def test_generate_directions_fails_after_two_bad():
     client = FakeClient(["not json", "{}"])
     with pytest.raises(ValueError):
-        design.generate(CONTENT, "portrait", SETTINGS, client=client)
+        design.generate_directions(VARIANTS, "portrait", SETTINGS, client=client)
