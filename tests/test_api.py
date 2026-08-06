@@ -85,3 +85,7 @@ def test_bad_orientation_rejected(client):
 
 def test_download_traversal_blocked(client):
     assert client.get("/api/download/..%5Ctoken.json").status_code in (404, 422)
+
+
+def test_download_drive_relative_blocked(client):
+    assert client.get("/api/download/C%3A.env").status_code == 404

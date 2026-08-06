@@ -72,9 +72,11 @@ def create_poster(req: PosterRequest):
 
 @app.get("/api/download/{filename}")
 def download(filename: str):
-    if "/" in filename or "\\" in filename or ".." in filename:
+    base = settings.out_dir.resolve()
+    try:
+        path = (settings.out_dir / filename).resolve()
+    except (OSError, ValueError):
         raise HTTPException(404)
-    path = settings.out_dir / filename
-    if not path.is_file():
+    if not path.is_relative_to(base) or not path.is_file():
         raise HTTPException(404)
-    return FileResponse(path, filename=filename)
+    return FileResponse(path, filename=path.name)

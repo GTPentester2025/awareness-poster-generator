@@ -25,7 +25,7 @@ def test_auth_url(tmp_path):
     url = canva.build_auth_url(_settings(tmp_path), "chal", "st4te")
     assert url.startswith("https://www.canva.com/api/oauth/authorize?")
     assert "code_challenge=chal" in url
-    assert "code_challenge_method=s256" in url
+    assert "code_challenge_method=S256" in url
     assert "response_type=code" in url
     assert "client_id=c" in url
     assert "state=st4te" in url

@@ -41,7 +41,7 @@ def make_pkce() -> tuple[str, str]:
 def build_auth_url(settings: Settings, challenge: str, state: str) -> str:
     query = urlencode({
         "code_challenge": challenge,
-        "code_challenge_method": "s256",
+        "code_challenge_method": "S256",
         "scope": SCOPE,
         "response_type": "code",
         "client_id": settings.canva_client_id,
