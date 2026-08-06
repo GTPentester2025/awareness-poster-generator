@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Awareness Poster Generator</title>
+<style>
+  :root { --ink: #1b2733; --accent: #2f7d6d; --paper: #f4f1ea; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Georgia, 'Times New Roman', serif; background: var(--paper); color: var(--ink); }
+  main { max-width: 640px; margin: 4rem auto; padding: 0 1.5rem; }
+  h1 { font-size: 2rem; letter-spacing: -0.02em; }
+  form { display: grid; gap: 0.9rem; margin-top: 1.5rem; }
+  textarea { font: inherit; padding: 0.8rem; border: 2px solid var(--ink); background: #fff; min-height: 5rem; }
+  .row { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; font-weight: bold; padding: 0.7rem 1.4rem; border: 2px solid var(--ink);
+           background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  #connect { background: #fff; color: var(--ink); }
+  #result { margin-top: 2rem; border-top: 2px solid var(--ink); padding-top: 1rem; }
+  .warn { color: #8a5a00; }
+  a.edit { display: inline-block; margin-top: 0.6rem; font-weight: bold; color: var(--accent); }
+  ul { padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Awareness Poster Generator</h1>
+  <p id="canva-state">Checking Canva connection&#8230;</p>
+  <form id="form">
+    <textarea id="topic" placeholder="e.g. Road safety for teenagers" required minlength="3"></textarea>
+    <div class="row">
+      <label><input type="radio" name="orientation" value="portrait" checked> A4 portrait</label>
+      <label><input type="radio" name="orientation" value="landscape"> A4 landscape</label>
+      <button id="go" type="submit">Generate poster</button>
+      <button id="connect" type="button" hidden>Connect Canva</button>
+    </div>
+  </form>
+  <div id="result"></div>
+</main>
+<script>
+const state = document.getElementById('canva-state');
+const connect = document.getElementById('connect');
+const go = document.getElementById('go');
+const result = document.getElementById('result');
+
+async function refreshStatus() {
+  const s = await (await fetch('/api/status')).json();
+  state.textContent = s.canva_connected ? 'Canva: connected ✓' : 'Canva: not connected';
+  connect.hidden = s.canva_connected;
+}
+connect.onclick = () => { location.href = '/auth/canva'; };
+refreshStatus();
+
+document.getElementById('form').onsubmit = async (e) => {
+  e.preventDefault();
+  go.disabled = true;
+  result.textContent = 'Generating… (30–90 s: writing copy, drawing background, importing to Canva)';
+  try {
+    const resp = await fetch('/api/posters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic: document.getElementById('topic').value,
+        orientation: document.querySelector('input[name=orientation]:checked').value,
+      }),
+    });
+    const body = await resp.json();
+    if (resp.status === 401) {
+      result.textContent = 'Connect Canva first.';
+      connect.hidden = false;
+      return;
+    }
+    if (!resp.ok) { result.textContent = 'Error: ' + (body.detail ?? resp.status); return; }
+    const c = body.content;
+    result.innerHTML = `
+      <h2>${c.headline}</h2>
+      <p>${c.subheadline}</p>
+      <ul>${c.facts.map(f => `<li>${f}</li>`).join('')}</ul>
+      <p><strong>${c.cta}</strong></p>
+      ${body.warnings.map(w => `<p class="warn">⚠ ${w}</p>`).join('')}
+      ${body.edit_url ? `<a class="edit" href="${body.edit_url}" target="_blank">Edit in Canva →</a>` : ''}
+      ${body.pptx_download ? `<a class="edit" href="${body.pptx_download}">Download PPTX</a>` : ''}
+    `;
+  } catch (err) {
+    result.textContent = 'Request failed: ' + err;
+  } finally {
+    go.disabled = false;
+  }
+};
+</script>
+</body>
+</html>
