@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+python-pptx
+openai
+httpx
+python-dotenv
+pytest
