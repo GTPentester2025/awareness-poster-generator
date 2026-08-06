@@ -52,6 +52,8 @@ async function refreshStatus() {
 connect.onclick = () => { location.href = '/auth/canva'; };
 refreshStatus();
 
+const esc = (s) => String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+
 document.getElementById('form').onsubmit = async (e) => {
   e.preventDefault();
   go.disabled = true;
@@ -73,14 +75,16 @@ document.getElementById('form').onsubmit = async (e) => {
     }
     if (!resp.ok) { result.textContent = 'Error: ' + (body.detail ?? resp.status); return; }
     const c = body.content;
+    const editUrl = body.edit_url && body.edit_url.startsWith('https://') ? body.edit_url : null;
+    const downloadUrl = body.pptx_download && body.pptx_download.startsWith('/api/download/') ? body.pptx_download : null;
     result.innerHTML = `
-      <h2>${c.headline}</h2>
-      <p>${c.subheadline}</p>
-      <ul>${c.facts.map(f => `<li>${f}</li>`).join('')}</ul>
-      <p><strong>${c.cta}</strong></p>
-      ${body.warnings.map(w => `<p class="warn">⚠ ${w}</p>`).join('')}
-      ${body.edit_url ? `<a class="edit" href="${body.edit_url}" target="_blank">Edit in Canva →</a>` : ''}
-      ${body.pptx_download ? `<a class="edit" href="${body.pptx_download}">Download PPTX</a>` : ''}
+      <h2>${esc(c.headline)}</h2>
+      <p>${esc(c.subheadline)}</p>
+      <ul>${c.facts.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
+      <p><strong>${esc(c.cta)}</strong></p>
+      ${body.warnings.map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
+      ${editUrl ? `<a class="edit" href="${esc(editUrl)}" target="_blank">Edit in Canva →</a>` : ''}
+      ${downloadUrl ? `<a class="edit" href="${esc(downloadUrl)}">Download PPTX</a>` : ''}
     `;
   } catch (err) {
     result.textContent = 'Request failed: ' + err;
