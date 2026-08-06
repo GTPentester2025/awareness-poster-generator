@@ -69,7 +69,7 @@ def _save_token(settings: Settings, payload: dict) -> dict:
 def _token_request(settings: Settings, data: dict, http=None) -> dict:
     if http is None:
         import httpx
-        http = httpx.Client()
+        http = httpx.Client(timeout=30)
     resp = http.post(
         TOKEN_URL,
         headers={

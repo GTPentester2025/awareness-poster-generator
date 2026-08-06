@@ -140,7 +140,13 @@ def test_import_design_timeout(tmp_path):
     _write_token(s)
     pptx = tmp_path / "p.pptx"
     pptx.write_bytes(b"fake")
-    stuck = FakeResponse(200, {"job": {"id": "j1", "status": "in_progress"}})
-    http = FakeHttp(post_responses=[stuck], get_responses=[stuck] * 10000)
+    stuck_payload = {"job": {"id": "j1", "status": "in_progress"}}
+
+    class InfiniteHttp(FakeHttp):
+        def get(self, url, **kwargs):
+            self.gets.append((url, kwargs))
+            return FakeResponse(200, stuck_payload)
+
+    http = InfiniteHttp(post_responses=[FakeResponse(200, stuck_payload)])
     with pytest.raises(canva.ImportTimeout):
         canva.import_design(s, pptx, "t", http=http, poll_interval=0, timeout=0.1)
