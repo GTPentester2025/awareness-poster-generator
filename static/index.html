@@ -21,12 +21,44 @@
   .warn { color: #8a5a00; }
   a.edit { display: inline-block; margin-top: 0.6rem; font-weight: bold; color: var(--accent); }
   ul { padding-left: 1.2rem; }
+  details.settings { margin-top: 1.5rem; border: 2px solid var(--ink); background: #fff; padding: 0.4rem 1rem; }
+  details.settings summary { cursor: pointer; font-weight: bold; }
+  .field { display: grid; gap: 0.25rem; margin: 0.8rem 0; }
+  .field label { font-size: 0.9rem; }
+  .field input { font: inherit; padding: 0.5rem; border: 2px solid var(--ink); }
+  .field .hint { font-size: 0.8rem; color: #666; }
+  #cfg-msg { font-size: 0.9rem; margin-left: 0.6rem; }
 </style>
 </head>
 <body>
 <main>
   <h1>Awareness Poster Generator</h1>
   <p id="canva-state">Checking Canva connection&#8230;</p>
+
+  <details class="settings" id="settings">
+    <summary>API keys &amp; settings</summary>
+    <div class="field">
+      <label for="cfg-openai">OpenAI API key</label>
+      <input id="cfg-openai" type="password" autocomplete="off" placeholder="sk-...">
+      <span class="hint" id="hint-openai"></span>
+    </div>
+    <div class="field">
+      <label for="cfg-cid">Canva Client ID</label>
+      <input id="cfg-cid" type="password" autocomplete="off" placeholder="paste client id">
+      <span class="hint" id="hint-cid"></span>
+    </div>
+    <div class="field">
+      <label for="cfg-secret">Canva Client Secret</label>
+      <input id="cfg-secret" type="password" autocomplete="off" placeholder="paste client secret">
+      <span class="hint" id="hint-secret"></span>
+    </div>
+    <div class="row">
+      <button id="cfg-save" type="button">Save keys</button>
+      <span id="cfg-msg"></span>
+    </div>
+    <p class="hint">Leave a field blank to keep its current value. Saved to your local <code>.env</code>; takes effect immediately (no restart). Register the Canva redirect URL <code id="redirect"></code> in your integration.</p>
+  </details>
+
   <form id="form">
     <textarea id="topic" placeholder="e.g. Road safety for teenagers" required minlength="3"></textarea>
     <div class="row">
@@ -51,6 +83,43 @@ async function refreshStatus() {
 }
 connect.onclick = () => { location.href = '/auth/canva'; };
 refreshStatus();
+
+const hintEl = { openai: 'hint-openai', cid: 'hint-cid', secret: 'hint-secret' };
+async function refreshConfig() {
+  const c = await (await fetch('/api/config')).json();
+  document.getElementById('hint-openai').textContent = c.openai_api_key.set ? 'current: ' + c.openai_api_key.hint : 'not set';
+  document.getElementById('hint-cid').textContent = c.canva_client_id.set ? 'current: ' + c.canva_client_id.hint : 'not set';
+  document.getElementById('hint-secret').textContent = c.canva_client_secret.set ? 'current: ' + c.canva_client_secret.hint : 'not set';
+  document.getElementById('redirect').textContent = c.base_url + '/auth/canva/callback';
+}
+refreshConfig();
+
+document.getElementById('cfg-save').onclick = async () => {
+  const btn = document.getElementById('cfg-save');
+  const msg = document.getElementById('cfg-msg');
+  btn.disabled = true;
+  msg.textContent = 'Saving…';
+  try {
+    const resp = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        openai_api_key: document.getElementById('cfg-openai').value || null,
+        canva_client_id: document.getElementById('cfg-cid').value || null,
+        canva_client_secret: document.getElementById('cfg-secret').value || null,
+      }),
+    });
+    if (!resp.ok) { msg.textContent = 'Error ' + resp.status; return; }
+    ['cfg-openai', 'cfg-cid', 'cfg-secret'].forEach(id => document.getElementById(id).value = '');
+    msg.textContent = 'Saved ✓';
+    await refreshConfig();
+    await refreshStatus();
+  } catch (err) {
+    msg.textContent = 'Failed: ' + err;
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 const esc = (s) => String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 

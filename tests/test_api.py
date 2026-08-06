@@ -26,12 +26,17 @@ def test_auth_redirects(client):
     assert r.headers["location"].startswith("https://www.canva.com/api/oauth/authorize?")
 
 
+FAKE_PLAN = {"palette": VALID["palette"], "background": {"mode": "image_full"}, "elements": []}
+SOLID_PLAN = {"palette": VALID["palette"], "background": {"mode": "solid"}, "elements": []}
+
+
 def test_poster_happy_path(client, monkeypatch, tmp_path):
     fake_pptx = tmp_path / "poster_x.pptx"
     fake_pptx.write_bytes(b"pptx")
     monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
     monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
-    monkeypatch.setattr(main.builder, "build", lambda c, i, o, d: fake_pptx)
+    monkeypatch.setattr(main.design, "generate", lambda c, o, s, client=None: dict(FAKE_PLAN))
+    monkeypatch.setattr(main.builder, "render", lambda plan, i, o, d: fake_pptx)
     monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/d1")
     r = client.post("/api/posters", json={"topic": "road safety", "orientation": "portrait"})
     body = r.json()
@@ -41,12 +46,57 @@ def test_poster_happy_path(client, monkeypatch, tmp_path):
     assert any("background" in w.lower() for w in body["warnings"])
 
 
+def test_poster_solid_plan_skips_image(client, monkeypatch, tmp_path):
+    fake_pptx = tmp_path / "poster_s.pptx"
+    fake_pptx.write_bytes(b"pptx")
+    monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
+    monkeypatch.setattr(main.design, "generate", lambda c, o, s, client=None: dict(SOLID_PLAN))
+    monkeypatch.setattr(main.builder, "render", lambda plan, i, o, d: fake_pptx)
+    monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/s")
+
+    called = {"img": False}
+
+    def img(*a, **kw):
+        called["img"] = True
+        return None
+
+    monkeypatch.setattr(main.artwork, "generate", img)
+    body = client.post("/api/posters", json={"topic": "x", "orientation": "portrait"}).json()
+    assert called["img"] is False  # solid plan never triggers image generation
+    assert body["edit_url"] == "https://canva.com/edit/s"
+
+
+def test_poster_layout_fallback(client, monkeypatch, tmp_path):
+    fake_pptx = tmp_path / "poster_fb.pptx"
+    fake_pptx.write_bytes(b"pptx")
+    monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
+    monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
+
+    def boom(*a, **kw):
+        raise ValueError("layout design failed")
+
+    monkeypatch.setattr(main.design, "generate", boom)
+    called = {}
+
+    def fb(c, i, o, d):
+        called["yes"] = True
+        return fake_pptx
+
+    monkeypatch.setattr(main.builder, "fallback_build", fb)
+    monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/fb")
+    body = client.post("/api/posters", json={"topic": "x", "orientation": "portrait"}).json()
+    assert called.get("yes") is True
+    assert body["edit_url"] == "https://canva.com/edit/fb"
+    assert any("layout" in w.lower() for w in body["warnings"])
+
+
 def test_poster_import_failure_offers_download(client, monkeypatch, tmp_path):
     fake_pptx = tmp_path / "poster_y.pptx"
     fake_pptx.write_bytes(b"pptx")
     monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
     monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
-    monkeypatch.setattr(main.builder, "build", lambda c, i, o, d: fake_pptx)
+    monkeypatch.setattr(main.design, "generate", lambda c, o, s, client=None: dict(FAKE_PLAN))
+    monkeypatch.setattr(main.builder, "render", lambda plan, i, o, d: fake_pptx)
 
     def boom(*a, **kw):
         raise canva.ImportFailed("bad")
@@ -62,13 +112,14 @@ def test_poster_import_failure_offers_download(client, monkeypatch, tmp_path):
 def test_poster_not_authenticated(client, monkeypatch):
     monkeypatch.setattr(main.content, "generate", lambda topic, s, client=None: dict(VALID))
     monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
+    monkeypatch.setattr(main.design, "generate", lambda c, o, s, client=None: dict(FAKE_PLAN))
 
-    def build(c, i, o, d):
+    def render(plan, i, o, d):
         p = main.settings.out_dir / "poster_z.pptx"
         p.write_bytes(b"pptx")
         return p
 
-    monkeypatch.setattr(main.builder, "build", build)
+    monkeypatch.setattr(main.builder, "render", render)
 
     def nope(*a, **kw):
         raise canva.NotAuthenticated("no token")

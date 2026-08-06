@@ -45,7 +45,7 @@ def _add_rect(slide, x, y, w, h, hex_color, transparency_pct=0):
     return rect
 
 
-def _add_text(slide, x, y, w, h, text, size_pt, hex_color, bold=False, align=PP_ALIGN.LEFT):
+def _add_text(slide, x, y, w, h, text, size_pt, hex_color, bold=False, align=PP_ALIGN.LEFT, font=None):
     box = slide.shapes.add_textbox(Emu(x), Emu(y), Emu(w), Emu(h))
     tf = box.text_frame
     tf.word_wrap = True
@@ -56,7 +56,76 @@ def _add_text(slide, x, y, w, h, text, size_pt, hex_color, bold=False, align=PP_
     run.font.size = Pt(size_pt)
     run.font.bold = bold
     run.font.color.rgb = _rgb(hex_color)
+    if font:
+        run.font.name = font
     return box
+
+
+_ALIGN_MAP = {"left": PP_ALIGN.LEFT, "center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT}
+
+
+def _add_auto_shape(slide, shape_name, x, y, w, h, hex_color, opacity=1.0):
+    from pptx.enum.shapes import MSO_SHAPE
+    enum = {"rect": MSO_SHAPE.RECTANGLE, "line": MSO_SHAPE.RECTANGLE,
+            "ellipse": MSO_SHAPE.OVAL}.get(shape_name, MSO_SHAPE.RECTANGLE)
+    shp = slide.shapes.add_shape(enum, Emu(x), Emu(y), Emu(max(w, 1)), Emu(max(h, 1)))
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = _rgb(hex_color)
+    shp.line.fill.background()
+    transparency_pct = int(round((1.0 - opacity) * 100))
+    if transparency_pct:
+        _set_fill_alpha(shp, transparency_pct)
+    return shp
+
+
+def render(plan: dict, image: Path | None, orientation: str, out_dir: Path) -> Path:
+    """Render a free-form LayoutPlan (from app.design) into an editable PPTX.
+    Draws background per plan, then each element in array order (later on top)."""
+    if orientation not in A4_EMU:
+        raise ValueError(f"orientation must be one of {sorted(A4_EMU)}")
+    w, h = A4_EMU[orientation]
+    pal = plan["palette"]
+    bg = plan.get("background", {"mode": "solid"})
+    mode = bg.get("mode", "solid")
+
+    prs = Presentation()
+    prs.slide_width = Emu(w)
+    prs.slide_height = Emu(h)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+
+    def rect(el):
+        return (int(el["x"] * w), int(el["y"] * h), int(el["w"] * w), int(el["h"] * h))
+
+    # ---- background ----
+    if mode == "image_full" and image is not None:
+        slide.shapes.add_picture(str(image), 0, 0, Emu(w), Emu(h))
+    elif mode == "image_panel" and image is not None:
+        _add_rect(slide, 0, 0, w, h, pal["bg"])
+        panel = bg.get("panel") if isinstance(bg.get("panel"), dict) else {"x": 0.5, "y": 0, "w": 0.5, "h": 1}
+        px, py, pw, ph = rect({"x": panel.get("x", 0.5), "y": panel.get("y", 0),
+                               "w": panel.get("w", 0.5), "h": panel.get("h", 1)})
+        slide.shapes.add_picture(str(image), Emu(px), Emu(py), Emu(pw), Emu(ph))
+    else:
+        # solid (also the fallback for gradient and for image modes with no image)
+        _add_rect(slide, 0, 0, w, h, pal["bg"])
+
+    # ---- elements ----
+    for el in plan["elements"]:
+        ex, ey, ew, eh = rect(el)
+        if el["type"] == "text":
+            _add_text(slide, ex, ey, ew, eh, el["text"], el["size_pt"], el["color"],
+                      bold=(el["weight"] == "bold"),
+                      align=_ALIGN_MAP.get(el["align"], PP_ALIGN.LEFT),
+                      font=el["font"])
+        elif el["type"] == "shape":
+            _add_auto_shape(slide, el["shape"], ex, ey, ew, eh, el["color"], el.get("opacity", 1.0))
+        elif el["type"] == "image" and image is not None:
+            slide.shapes.add_picture(str(image), Emu(ex), Emu(ey), Emu(ew), Emu(eh))
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"poster_{uuid.uuid4().hex[:8]}.pptx"
+    prs.save(str(path))
+    return path
 
 
 def build(content: dict, image: Path | None, orientation: str, out_dir: Path) -> Path:
@@ -103,3 +172,7 @@ def build(content: dict, image: Path | None, orientation: str, out_dir: Path) ->
     path = out_dir / f"poster_{uuid.uuid4().hex[:8]}.pptx"
     prs.save(str(path))
     return path
+
+
+# Kept as the safety net when AI layout generation or validation fails.
+fallback_build = build
