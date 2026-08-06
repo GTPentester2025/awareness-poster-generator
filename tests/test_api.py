@@ -14,6 +14,11 @@ def client(tmp_path, monkeypatch):
     s = SETTINGS.__class__(**{**SETTINGS.__dict__, "out_dir": tmp_path, "token_path": tmp_path / "token.json"})
     monkeypatch.setattr(main, "settings", s)
     monkeypatch.setattr(main.knowledge, "retrieve", lambda topic: [])
+    monkeypatch.setattr(main.research, "web_research", lambda topic, s, client=None: None)
+    monkeypatch.setattr(main.critique, "critique_pptx", lambda p, s, client=None: None)
+    monkeypatch.setattr(main.history, "avoid_block", lambda path=None: "")
+    monkeypatch.setattr(main.history, "remember", lambda specs, path=None: None)
+    monkeypatch.setattr(main.brand, "DEFAULT_PATH", tmp_path / "brand.json")
     return TestClient(main.app)
 
 
@@ -40,8 +45,8 @@ SPECS = [
 def _happy_mocks(monkeypatch, tmp_path):
     fake_pptx = tmp_path / "poster_x.pptx"
     fake_pptx.write_bytes(b"pptx")
-    monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, client=None: [dict(v) for v in VARIANTS])
-    monkeypatch.setattr(main.design, "generate_directions", lambda v, o, s, client=None: [dict(x) for x in SPECS])
+    monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, angles=None, brand_block="", client=None: [dict(v) for v in VARIANTS])
+    monkeypatch.setattr(main.design, "generate_directions", lambda v, o, s, brand_block="", avoid_block="", fix_hints=None, client=None: [dict(x) for x in SPECS])
     monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
     monkeypatch.setattr(main.builder, "render", lambda spec, variant, i, o, d: fake_pptx)
     monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/d1")
@@ -111,7 +116,7 @@ def test_poster_direction_failure_falls_back_to_single(client, monkeypatch, tmp_
     _connect(tmp_path)
     fake_pptx = tmp_path / "poster_fb.pptx"
     fake_pptx.write_bytes(b"pptx")
-    monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, client=None: [dict(v) for v in VARIANTS])
+    monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, angles=None, brand_block="", client=None: [dict(v) for v in VARIANTS])
 
     def boom(*a, **kw):
         raise ValueError("style direction failed")
@@ -133,6 +138,29 @@ def test_knowledge_titles_reported(client, monkeypatch, tmp_path):
                         lambda topic: [{"title": "GDPR (EU)", "keywords": set(), "body": "x"}])
     body = client.post("/api/posters", json={"topic": "gdpr", "orientation": "portrait"}).json()
     assert body["knowledge_used"] == ["GDPR (EU)"]
+
+
+def test_both_orientations_doubles_options(client, monkeypatch, tmp_path):
+    _connect(tmp_path)
+    _happy_mocks(monkeypatch, tmp_path)
+    body = client.post("/api/posters", json={"topic": "x", "orientation": "both"}).json()
+    assert len(body["options"]) == 6
+    orientations = [o["orientation"] for o in body["options"]]
+    assert orientations.count("portrait") == 3
+    assert orientations.count("landscape") == 3
+
+
+def test_brand_roundtrip(client, monkeypatch, tmp_path):
+    r = client.post("/api/brand", json={
+        "org_name": "Acme", "about": "Safety non-profit",
+        "colors": ["#112233", "notahex", "#AABBCC"],
+    })
+    assert r.status_code == 200
+    saved = r.json()
+    assert saved["org_name"] == "Acme"
+    assert saved["colors"] == ["#112233", "#AABBCC"]
+    got = client.get("/api/brand").json()
+    assert got["about"] == "Safety non-profit"
 
 
 def test_bad_orientation_rejected(client):

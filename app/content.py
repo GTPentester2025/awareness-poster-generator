@@ -10,10 +10,9 @@ ANGLES = {"precautions", "red_flags", "impact", "myths_vs_facts", "stats", "chec
 MIN_POINTS, MAX_POINTS = 3, 6
 
 SYSTEM_PROMPT = """You are an expert public-awareness copywriter. For the given topic,
-write THREE clearly different poster concepts. Each takes a different ANGLE:
-choose from: precautions, red_flags, impact, myths_vs_facts, stats, checklist, steps.
-Vary the number of points between concepts (3 to 6 points each) — do NOT give
-every concept the same count.
+write THREE clearly different poster concepts. Use EXACTLY the three angles the
+user assigns (one per concept, in order). Vary the number of points between
+concepts (3 to 6 points each) — do NOT give every concept the same count.
 
 Return ONLY JSON:
 {
@@ -87,13 +86,20 @@ def validate_content(data: dict) -> dict:
 
 
 def generate(topic: str, settings: Settings, knowledge_docs: list[dict] | None = None,
+             angles: list[str] | None = None, brand_block: str = "",
              client=None) -> list[dict]:
-    """Returns 3 validated content variants. Retries once, then raises ValueError."""
+    """Returns 3 validated content variants. Retries once, then raises ValueError.
+    `angles`: three assigned angles (server-sampled for run-to-run variety).
+    `brand_block`: serialized brand kit steering tone."""
     if client is None:
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
 
     user = f"Awareness poster topic: {topic}"
+    if angles:
+        user += f"\n\nAssigned angles, one per concept in order: {', '.join(angles[:3])}"
+    if brand_block:
+        user += f"\n\nBRAND (match this voice; mention the org naturally in the CTA if it fits):\n{brand_block}"
     if knowledge_docs:
         ref = "\n\n".join(f"### {d['title']}\n{d['body']}" for d in knowledge_docs)
         user += f"\n\nREFERENCE MATERIAL (use these facts, cite these sources):\n{ref}"

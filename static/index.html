@@ -62,12 +62,34 @@
     <p class="hint">Leave a field blank to keep its current value. Saved to your local <code>.env</code>; takes effect immediately (no restart). Register the Canva redirect URL <code id="redirect"></code> in your integration.</p>
   </details>
 
+  <details class="settings" id="brand">
+    <summary>Brand kit (optional)</summary>
+    <div class="field">
+      <label for="brand-org">Organization name</label>
+      <input id="brand-org" type="text" placeholder="e.g. Acme Safety Council">
+    </div>
+    <div class="field">
+      <label for="brand-about">What the organization is about (ideology, mission, voice)</label>
+      <textarea id="brand-about" placeholder="e.g. A non-profit promoting digital safety for students. Tone: hopeful, direct, evidence-first."></textarea>
+    </div>
+    <div class="field">
+      <label for="brand-colors">Brand colors (comma-separated hex codes)</label>
+      <input id="brand-colors" type="text" placeholder="#0E3A5D, #3EC1D3, #FFB100">
+      <span class="hint">Poster palettes get built around these. Leave empty for free choice.</span>
+    </div>
+    <div class="row">
+      <button id="brand-save" type="button">Save brand</button>
+      <span id="brand-msg"></span>
+    </div>
+  </details>
+
   <form id="form">
     <textarea id="topic" placeholder="e.g. Road safety for teenagers" required minlength="3"></textarea>
     <div class="row">
       <label><input type="radio" name="orientation" value="portrait" checked> A4 portrait</label>
       <label><input type="radio" name="orientation" value="landscape"> A4 landscape</label>
-      <button id="go" type="submit">Generate poster</button>
+      <label><input type="radio" name="orientation" value="both"> Both</label>
+      <button id="go" type="submit">Generate posters</button>
       <button id="connect" type="button" hidden>Connect Canva</button>
     </div>
   </form>
@@ -96,6 +118,34 @@ async function refreshConfig() {
   document.getElementById('redirect').textContent = c.base_url + '/auth/canva/callback';
 }
 refreshConfig();
+
+async function refreshBrand() {
+  const b = await (await fetch('/api/brand')).json();
+  document.getElementById('brand-org').value = b.org_name || '';
+  document.getElementById('brand-about').value = b.about || '';
+  document.getElementById('brand-colors').value = (b.colors || []).join(', ');
+}
+refreshBrand();
+
+document.getElementById('brand-save').onclick = async () => {
+  const msg = document.getElementById('brand-msg');
+  msg.textContent = 'Saving…';
+  try {
+    const colors = document.getElementById('brand-colors').value
+      .split(',').map(s => s.trim()).filter(Boolean);
+    const resp = await fetch('/api/brand', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        org_name: document.getElementById('brand-org').value,
+        about: document.getElementById('brand-about').value,
+        colors,
+      }),
+    });
+    msg.textContent = resp.ok ? 'Saved ✓' : 'Error ' + resp.status;
+    if (resp.ok) await refreshBrand();
+  } catch (err) { msg.textContent = 'Failed: ' + err; }
+};
 
 document.getElementById('cfg-save').onclick = async () => {
   const btn = document.getElementById('cfg-save');
@@ -152,7 +202,7 @@ document.getElementById('form').onsubmit = async (e) => {
       const downloadUrl = opt.pptx_download && opt.pptx_download.startsWith('/api/download/') ? opt.pptx_download : null;
       return `
         <section class="option">
-          <p class="chip">Option ${i + 1} · ${esc(c.angle || '')} · ${esc(opt.archetype || '')}</p>
+          <p class="chip">Option ${i + 1} · ${esc(c.angle || '')} · ${esc(opt.archetype || '')} · ${esc(opt.orientation || '')}${opt.quality_score ? ` · critic ${esc(opt.quality_score)}/10` : ''}</p>
           <h2>${esc(c.headline)}</h2>
           <p>${esc(c.subheadline)}</p>
           <ul>${c.points.map(p => `<li><strong>${esc(p.stat)}</strong> — ${esc(p.text)}</li>`).join('')}</ul>

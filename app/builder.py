@@ -45,10 +45,10 @@ def _add_rect(slide, x, y, w, h, hex_color, transparency_pct=0):
     return rect
 
 
-def _add_text(slide, x, y, w, h, text, size_pt, hex_color, bold=False, align=PP_ALIGN.LEFT, font=None):
+def _add_text(slide, x, y, w, h, text, size_pt, hex_color, bold=False, align=PP_ALIGN.LEFT, font=None, wrap=True):
     box = slide.shapes.add_textbox(Emu(x), Emu(y), Emu(w), Emu(h))
     tf = box.text_frame
-    tf.word_wrap = True
+    tf.word_wrap = wrap
     para = tf.paragraphs[0]
     para.alignment = align
     run = para.add_run()
@@ -155,16 +155,22 @@ def _card(slide, x, y, w, h, spec, stat, text):
     else:  # filled
         _rounded(slide, x, y, w, h, surface, opacity=1.0)
     text_color = _readable(surface)
-    # badge with the stat/number
-    badge = int(min(h * 0.62, w * 0.22))
-    bx, by = x + pad, y + (h - badge) // 2
-    _add_auto_shape(slide, "ellipse", bx, by, badge, badge, accent)
-    _add_text(slide, bx, by + int(badge * 0.18), badge, int(badge * 0.7), str(stat),
-              _fit(13, str(stat), 6), _readable(accent), bold=True, align=PP_ALIGN.CENTER,
-              font=spec["fonts"]["heading"])
-    tx = bx + badge + pad
-    _add_text(slide, tx, y + pad, x + w - tx - pad, h - 2 * pad, text,
-              _fit(14, text, 70), text_color, align=PP_ALIGN.LEFT, font=spec["fonts"]["body"])
+    # stat badge: circle for short stats, pill for longer ones — no mid-word clipping
+    stat = str(stat)
+    bh = int(min(h * 0.55, w * 0.2))
+    bw = bh if len(stat) <= 3 else int(bh * min(1.9, 0.7 + 0.24 * len(stat)))
+    bx, by = x + pad, y + (h - bh) // 2
+    shape_kind = "ellipse" if len(stat) <= 3 else "pill"
+    if shape_kind == "pill":
+        _rounded(slide, bx, by, bw, bh, accent)
+    else:
+        _add_auto_shape(slide, "ellipse", bx, by, bw, bh, accent)
+    _add_text(slide, bx, by + int(bh * 0.22), bw, int(bh * 0.6), stat,
+              _fit(12, stat, 5), _readable(accent), bold=True, align=PP_ALIGN.CENTER,
+              font=spec["fonts"]["heading"], wrap=False)
+    tx = bx + bw + pad
+    _add_text(slide, tx, y + int(pad * 0.6), x + w - tx - pad, h - int(pad * 1.2), text,
+              _fit(13, text, 48), text_color, align=PP_ALIGN.LEFT, font=spec["fonts"]["body"])
 
 
 def _draw_facts(slide, x, y, w, h, facts, stats, spec, cols):
@@ -203,9 +209,23 @@ def _decor(slide, w, h, spec):
                         pal["accent"], opacity=0.16)
         _add_auto_shape(slide, "ellipse", int(-w * 0.12), int(h * 0.78), int(w * 0.34), int(w * 0.34),
                         pal["accent"], opacity=0.12)
+    motif = spec.get("motif", "none")
+    if motif == "dots":
+        step = int(w * 0.045)
+        for r in range(3):
+            for c in range(6):
+                _add_auto_shape(slide, "ellipse", int(w * 0.62) + c * step, int(h * 0.03) + r * step,
+                                int(w * 0.008), int(w * 0.008), pal["accent"], opacity=0.55)
+    elif motif == "rings":
+        for rx, ry, rs in [(0.8, 0.05, 0.16), (0.86, 0.12, 0.1), (0.06, 0.86, 0.12)]:
+            _add_auto_shape(slide, "ellipse", int(w * rx), int(h * ry), int(w * rs), int(w * rs),
+                            pal["accent"], opacity=0.28)
+            _add_auto_shape(slide, "ellipse", int(w * rx) + int(w * rs * 0.18), int(h * ry) + int(w * rs * 0.18),
+                            int(w * rs * 0.64), int(w * rs * 0.64), pal["bg"], opacity=1.0)
+    elif motif == "stripes":
         for i in range(4):
-            _add_auto_shape(slide, "ellipse", int(w * 0.06) + i * int(w * 0.025), int(h * 0.955),
-                            int(w * 0.01), int(w * 0.01), pal["accent"], opacity=0.8)
+            _add_rect(slide, int(w * 0.7) + i * int(w * 0.035), int(-h * 0.02),
+                      int(w * 0.012), int(h * 0.16), pal["accent"], transparency_pct=30)
 
 
 def _draw_sources(slide, w, h, sources, spec, on_dark_bg):
@@ -360,6 +380,69 @@ def render(spec: dict, content: dict, image: Path | None, orientation: str, out_
             _card(slide, card_x, cy, w - m - card_x, int(row * 0.85), spec,
                   stats[i] if i < len(stats) else str(i + 1), fact)
         _draw_cta(slide, m, int(h * 0.88), w - 2 * m, int(h * 0.08), content["cta"], spec)
+
+    elif arch == "poster_frame":
+        # thick brand-color frame around the whole poster, gallery style
+        bw = int(min(w, h) * 0.035)
+        if has_img:
+            _pic_cover(slide, image, 0, 0, w, h)
+            _scrim(slide, 0, 0, w, h, pal["bg"], 0.66)
+        for fx, fy, fw2, fh2 in [(0, 0, w, bw), (0, h - bw, w, bw), (0, 0, bw, h), (w - bw, 0, bw, h)]:
+            _add_rect(slide, fx, fy, fw2, fh2, pal["accent"])
+        base_color = "#FFFFFF" if has_img else _readable(pal["bg"])
+        inner = bw + m
+        _draw_headline(slide, inner, int(h * 0.09), w - 2 * inner, int(h * 0.13), content["headline"],
+                       spec, base_color, 40 if not landscape else 33, "center", panel=has_img)
+        _add_text(slide, inner, int(h * 0.24), w - 2 * inner, int(h * 0.05), content["subheadline"],
+                  _fit(16, content["subheadline"], 60), base_color, align=PP_ALIGN.CENTER,
+                  font=spec["fonts"]["body"])
+        _draw_facts(slide, inner, int(h * 0.32), w - 2 * inner, int(h * 0.5), facts, stats, spec,
+                    cols=2 if (landscape or len(facts) > 4) else 1)
+        _draw_cta(slide, int(w * 0.22), int(h * 0.855), int(w * 0.56), int(h * 0.08), content["cta"], spec)
+
+    elif arch == "diagonal_energy":
+        # angled accent slabs give the poster motion; content rides the diagonal
+        if has_img:
+            _pic_cover(slide, image, 0, 0, w, h)
+            _scrim(slide, 0, 0, w, h, pal["bg"], 0.68)
+        from pptx.enum.shapes import MSO_SHAPE
+        tri = slide.shapes.add_shape(MSO_SHAPE.RIGHT_TRIANGLE, Emu(0), Emu(0), Emu(w), Emu(int(h * 0.34)))
+        tri.rotation = 180
+        tri.fill.solid()
+        tri.fill.fore_color.rgb = _rgb(pal["accent"])
+        tri.line.fill.background()
+        _set_fill_alpha(tri, 22)
+        tri2 = slide.shapes.add_shape(MSO_SHAPE.RIGHT_TRIANGLE, Emu(0), Emu(int(h * 0.72)),
+                                      Emu(w), Emu(int(h * 0.28)))
+        tri2.fill.solid()
+        tri2.fill.fore_color.rgb = _rgb(pal["accent"])
+        tri2.line.fill.background()
+        _set_fill_alpha(tri2, 35)
+        base_color = "#FFFFFF" if has_img else _readable(pal["bg"])
+        _draw_headline(slide, m, int(h * 0.06), w - 2 * m, int(h * 0.14), content["headline"],
+                       spec, base_color, 42 if not landscape else 34, "left", panel=has_img)
+        _add_text(slide, m, int(h * 0.215), w - 2 * m, int(h * 0.05), content["subheadline"],
+                  _fit(16, content["subheadline"], 60), base_color, font=spec["fonts"]["body"])
+        _draw_facts(slide, m, int(h * 0.29), w - 2 * m, int(h * 0.5), facts, stats, spec,
+                    cols=2 if (landscape or len(facts) > 3) else 1)
+        _draw_cta(slide, int(w * 0.3), int(h * 0.86), int(w * 0.64), int(h * 0.09), content["cta"], spec)
+
+    elif arch == "bottom_hero":
+        # inverse hero: content on top, imagery anchors the bottom third
+        ih = int(h * 0.34)
+        if has_img:
+            _pic_cover(slide, image, 0, h - ih, w, ih)
+            _scrim(slide, 0, h - ih, w, int(ih * 0.4), pal["bg"], 0.5)
+        else:
+            _add_rect(slide, 0, h - ih, w, ih, pal["accent"])
+        base_color = _readable(pal["bg"])
+        _draw_headline(slide, m, int(h * 0.05), w - 2 * m, int(h * 0.13), content["headline"],
+                       spec, base_color, 42 if not landscape else 34, "left")
+        _add_text(slide, m, int(h * 0.19), w - 2 * m, int(h * 0.05), content["subheadline"],
+                  _fit(16, content["subheadline"], 60), base_color, font=spec["fonts"]["body"])
+        _draw_facts(slide, m, int(h * 0.26), w - 2 * m, int(h * 0.36), facts, stats, spec,
+                    cols=2 if (landscape or len(facts) > 4) else 1)
+        _draw_cta(slide, m, int(h - ih + ih * 0.32), w - 2 * m, int(ih * 0.36), content["cta"], spec)
 
     else:  # split_band — full-height image band beside a content column
         band = int(w * 0.46)

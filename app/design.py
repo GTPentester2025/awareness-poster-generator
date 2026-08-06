@@ -12,7 +12,9 @@ from app.config import Settings
 HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 ARCHETYPES = {"hero_top", "sidebar", "banner_header", "centered_feature",
-              "big_number", "steps_path", "split_band"}
+              "big_number", "steps_path", "split_band",
+              "poster_frame", "diagonal_energy", "bottom_hero"}
+MOTIFS = {"dots", "rings", "stripes", "none"}
 BACKGROUND_STYLES = {"image", "gradient", "solid"}
 CARD_STYLES = {"filled", "outline", "soft_shadow"}
 HEADER_STYLES = {"block", "underline", "badge"}
@@ -63,6 +65,7 @@ def validate_spec(spec: dict) -> dict:
     spec["card_style"] = spec.get("card_style") if spec.get("card_style") in CARD_STYLES else "filled"
     spec["header_style"] = spec.get("header_style") if spec.get("header_style") in HEADER_STYLES else "block"
     spec["accent_shapes"] = bool(spec.get("accent_shapes", True))
+    spec["motif"] = spec.get("motif") if spec.get("motif") in MOTIFS else "none"
 
     ip = spec.get("image_prompt")
     spec["image_prompt"] = ip if isinstance(ip, str) and ip.strip() else "abstract minimal background, soft shapes, muted tones, ample negative space, no text"
@@ -103,14 +106,15 @@ Return ONLY JSON:
 {
   "directions": [
     {
-      "archetype": "hero_top" | "sidebar" | "banner_header" | "centered_feature" | "big_number" | "steps_path" | "split_band",
+      "archetype": "hero_top" | "sidebar" | "banner_header" | "centered_feature" | "big_number" | "steps_path" | "split_band" | "poster_frame" | "diagonal_energy" | "bottom_hero",
       "palette": {"bg":"#RRGGBB","surface":"#RRGGBB","accent":"#RRGGBB","text":"#RRGGBB","muted":"#RRGGBB"},
       "fonts": {"heading":"<allowed font>","body":"<allowed font>"},
       "background_style": "image" | "gradient" | "solid",
       "card_style": "filled" | "outline" | "soft_shadow",
       "header_style": "block" | "underline" | "badge",
       "accent_shapes": true | false,
-      "image_prompt": "<vivid prompt for background/hero art matching THIS concept's mood; flat illustration or photographic; NO text or letters in the image; calm areas for overlaid text>"
+      "motif": "dots" | "rings" | "stripes" | "none",
+      "image_prompt": "<vivid prompt for background/hero art matching THIS concept's mood; vary the medium boldly between concepts — flat vector illustration, editorial photography, paper-cut collage, isometric 3D, grainy risograph, watercolor; NO text or letters in the image; calm areas for overlaid text>"
     },
     ... exactly 3, one per concept, in order ...
   ]
@@ -132,10 +136,51 @@ Hard rules:
   Arial, League Spartan, Abril Fatface, Lora, PT Sans, Quicksand."""
 
 
+def generate_single(variant: dict, orientation: str, settings: Settings,
+                    brand_block: str = "", fix_hints: list[str] | None = None,
+                    keep_archetype: str | None = None, client=None) -> dict:
+    """Re-art-direct ONE concept (critique-retry path). Returns a validated
+    StyleSpec. Raises ValueError after one retry."""
+    if client is None:
+        from openai import OpenAI
+        client = OpenAI(api_key=settings.openai_api_key)
+    user = json.dumps({
+        "orientation": orientation,
+        "concept": {k: variant.get(k) for k in ("angle", "headline", "subheadline", "points", "cta")},
+    })
+    prompt = f"Art-direct this ONE {orientation} poster concept. Return the same JSON shape but with a single object in \"directions\" (list of 1).\n{user}"
+    if keep_archetype:
+        prompt += f"\nKeep archetype \"{keep_archetype}\"."
+    if brand_block:
+        prompt += f"\n\nBRAND KIT:\n{brand_block}"
+    if fix_hints:
+        prompt += "\n\nA design reviewer rejected the previous attempt. Apply these fixes:\n- " + "\n- ".join(fix_hints)
+    last_err = None
+    for _ in range(2):
+        resp = client.chat.completions.create(
+            model=settings.openai_text_model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                      {"role": "user", "content": prompt}],
+        )
+        try:
+            data = json.loads(resp.choices[0].message.content)
+            directions = data.get("directions")
+            if not isinstance(directions, list) or not directions:
+                raise ValueError("no directions")
+            return validate_spec(directions[0])
+        except (ValueError, json.JSONDecodeError) as e:
+            last_err = e
+    raise ValueError(f"single direction failed: {last_err}")
+
+
 def generate_directions(variants: list[dict], orientation: str, settings: Settings,
-                        client=None) -> list[dict]:
+                        brand_block: str = "", avoid_block: str = "",
+                        fix_hints: list[str] | None = None, client=None) -> list[dict]:
     """Art-direct all three content variants together → three validated,
-    archetype-distinct StyleSpecs (same order as variants). Retries once."""
+    archetype-distinct StyleSpecs (same order as variants). Retries once.
+    brand_block: brand kit constraints. avoid_block: recently used combos to
+    avoid. fix_hints: critique feedback from a rejected earlier attempt."""
     if client is None:
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
@@ -152,6 +197,15 @@ def generate_directions(variants: list[dict], orientation: str, settings: Settin
             } for v in variants
         ],
     })
+    prompt = f"Art-direct these 3 {orientation} poster concepts:\n{user}"
+    if brand_block:
+        prompt += (f"\n\nBRAND KIT (palettes must be built around the brand colors; "
+                   f"style must fit the org's character):\n{brand_block}")
+    if avoid_block:
+        prompt += f"\n\n{avoid_block}"
+    if fix_hints:
+        prompt += ("\n\nA design reviewer rejected the previous attempt. Apply these fixes:\n- "
+                   + "\n- ".join(fix_hints))
 
     last_err = None
     for _ in range(2):
@@ -160,7 +214,7 @@ def generate_directions(variants: list[dict], orientation: str, settings: Settin
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Art-direct these 3 {orientation} poster concepts:\n{user}"},
+                {"role": "user", "content": prompt},
             ],
         )
         try:

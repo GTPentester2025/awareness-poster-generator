@@ -1,4 +1,5 @@
 import os
+import random
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -8,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from app import artwork, builder, canva, content, design, envfile, knowledge
+from app import artwork, brand, builder, canva, content, critique, design, envfile, history, knowledge, research
 from app.config import load_settings
 
 app = FastAPI(title="Awareness Poster Generator")
@@ -30,13 +31,19 @@ def reload_settings() -> None:
 
 class PosterRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=300)
-    orientation: Literal["portrait", "landscape"] = "portrait"
+    orientation: Literal["portrait", "landscape", "both"] = "portrait"
 
 
 class ConfigRequest(BaseModel):
     openai_api_key: str | None = None
     canva_client_id: str | None = None
     canva_client_secret: str | None = None
+
+
+class BrandRequest(BaseModel):
+    org_name: str | None = None
+    about: str | None = None
+    colors: list[str] | None = None
 
 
 def _plan_uses_image(spec: dict) -> bool:
@@ -68,6 +75,22 @@ def status():
 @app.get("/api/config")
 def get_config():
     return _config_status()
+
+
+@app.get("/api/brand")
+def get_brand():
+    return brand.load()
+
+
+@app.post("/api/brand")
+def set_brand(req: BrandRequest):
+    current = brand.load()
+    merged = {
+        "org_name": req.org_name if req.org_name is not None else current["org_name"],
+        "about": req.about if req.about is not None else current["about"],
+        "colors": req.colors if req.colors is not None else current["colors"],
+    }
+    return brand.save(merged)
 
 
 @app.post("/api/config")
@@ -110,18 +133,48 @@ def auth_callback(
     return RedirectResponse("/")
 
 
-def _make_option(variant: dict, spec: dict, orientation: str) -> dict:
-    """Build one poster option end-to-end: image (if styled) → render → import.
-    Never raises — failures degrade into warnings/downloads so sibling options
-    still ship."""
+def _render_and_check(variant: dict, spec: dict, image, orientation: str,
+                      warnings: list[str], brand_block: str):
+    """Render, then let the vision critic look at the poster. One retry with
+    the critic's fix hints when the score is poor. Returns (pptx, score)."""
+    pptx = builder.render(spec, variant, image, orientation, settings.out_dir)
+    verdict = critique.critique_pptx(pptx, settings)
+    if verdict is None:
+        return pptx, None
+    if verdict["score"] >= critique.PASS_SCORE or not verdict.get("fix_hints"):
+        return pptx, verdict["score"]
+    try:
+        new_spec = design.generate_single(variant, orientation, settings,
+                                          brand_block=brand_block,
+                                          fix_hints=verdict["fix_hints"],
+                                          keep_archetype=spec.get("archetype"))
+        new_image = image
+        if _plan_uses_image(new_spec) and image is None:
+            new_image = artwork.generate(new_spec["image_prompt"], orientation, settings)
+        pptx2 = builder.render(new_spec, variant, new_image, orientation, settings.out_dir)
+        verdict2 = critique.critique_pptx(pptx2, settings)
+        if verdict2 is None or verdict2["score"] >= verdict["score"]:
+            spec.update(new_spec)
+            return pptx2, (verdict2 or {}).get("score")
+    except Exception:
+        pass
+    warnings.append(f"Design critic scored this option {verdict['score']}/10; retry did not improve it.")
+    return pptx, verdict["score"]
+
+
+def _make_option(variant: dict, spec: dict, orientation: str, brand_block: str) -> dict:
+    """Build one poster option end-to-end: image (if styled, with no-text QA)
+    → render → vision critique (retry once on poor score) → import. Never
+    raises — failures degrade into warnings/downloads so siblings still ship."""
     warnings: list[str] = []
     image = None
     if _plan_uses_image(spec):
         image = artwork.generate(spec["image_prompt"], orientation, settings)
         if image is None:
             warnings.append("Background image failed — solid background used.")
+    score = None
     try:
-        pptx = builder.render(spec, variant, image, orientation, settings.out_dir)
+        pptx, score = _render_and_check(variant, spec, image, orientation, warnings, brand_block)
     except Exception as e:
         warnings.append(f"Layout render failed ({e}) — standard layout used.")
         pptx = builder.fallback_build(content.to_legacy(variant), image, orientation, settings.out_dir)
@@ -137,6 +190,8 @@ def _make_option(variant: dict, spec: dict, orientation: str) -> dict:
     return {
         "content": variant,
         "archetype": spec.get("archetype"),
+        "orientation": orientation,
+        "quality_score": score,
         "edit_url": edit_url,
         "warnings": warnings,
         "pptx_download": pptx_download,
@@ -148,21 +203,34 @@ def create_poster(req: PosterRequest):
     if not settings.token_path.exists():
         raise HTTPException(401, "Canva not connected — click Connect Canva first")
 
+    kit = brand.load()
+    brand_block = brand.prompt_block(kit)
     docs = knowledge.retrieve(req.topic)
-    variants = content.generate(req.topic, settings, knowledge_docs=docs)
+    fresh = research.web_research(req.topic, settings)
+    if fresh:
+        docs = docs + [fresh]
 
+    angles = random.sample(sorted(content.ANGLES), 3)
+    variants = content.generate(req.topic, settings, knowledge_docs=docs,
+                                angles=angles, brand_block=brand_block)
+
+    base_orientation = "portrait" if req.orientation == "both" else req.orientation
     try:
-        specs = design.generate_directions(variants, req.orientation, settings)
+        specs = design.generate_directions(variants, base_orientation, settings,
+                                           brand_block=brand_block,
+                                           avoid_block=history.avoid_block())
     except Exception:
         specs = None
 
     if specs is None:
         # art direction failed entirely — ship one safe poster rather than nothing
         image = artwork.generate("awareness poster background, abstract, no text",
-                                 req.orientation, settings)
+                                 base_orientation, settings)
         pptx = builder.fallback_build(content.to_legacy(variants[0]), image,
-                                      req.orientation, settings.out_dir)
-        option = {"content": variants[0], "archetype": "standard", "edit_url": None,
+                                      base_orientation, settings.out_dir)
+        option = {"content": variants[0], "archetype": "standard",
+                  "orientation": base_orientation, "quality_score": None,
+                  "edit_url": None,
                   "warnings": ["AI art direction failed — standard layout used."],
                   "pptx_download": None}
         try:
@@ -172,12 +240,16 @@ def create_poster(req: PosterRequest):
             option["pptx_download"] = f"/api/download/{pptx.name}"
         return {"options": [option], "knowledge_used": [d["title"] for d in docs]}
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    orientations = ["portrait", "landscape"] if req.orientation == "both" else [req.orientation]
+    jobs = [(variant, dict(spec), o)
+            for variant, spec in zip(variants, specs) for o in orientations]
+    with ThreadPoolExecutor(max_workers=4) as pool:
         options = list(pool.map(
-            lambda pair: _make_option(pair[0], pair[1], req.orientation),
-            zip(variants, specs),
+            lambda job: _make_option(job[0], job[1], job[2], brand_block),
+            jobs,
         ))
 
+    history.remember(specs)
     return {"options": options, "knowledge_used": [d["title"] for d in docs]}
 
 
