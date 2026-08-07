@@ -218,8 +218,12 @@ document.getElementById('form').onsubmit = async (e) => {
           ${downloadUrl ? `<a class="edit" href="${esc(downloadUrl)}">Download PPTX</a>` : ''}
         </section>`;
     };
+    const meta = [];
+    if (typeof body.content_score === 'number') meta.push(`copy reviewed ${esc(body.content_score)}/100`);
+    if (body.grounded) meta.push('grounded in cited sources');
+    if (body.knowledge_used && body.knowledge_used.length) meta.push('refs: ' + body.knowledge_used.map(esc).join(' · '));
     result.innerHTML = `
-      ${body.knowledge_used && body.knowledge_used.length ? `<p class="hint">Grounded in: ${body.knowledge_used.map(esc).join(' · ')}</p>` : ''}
+      ${meta.length ? `<p class="hint">${meta.join(' · ')}</p>` : ''}
       ${body.options.map(renderOption).join('')}
     `;
   } catch (err) {

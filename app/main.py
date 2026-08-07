@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from app import (artwork, brand, builder, canva, content, critique, design, director,
+from app import (artwork, brand, builder, canva, content, critique, curation, design, director,
                  envfile, history, knowledge, recipes, research)
 from app.config import load_settings
 
@@ -50,6 +50,20 @@ def _plan_uses_image(spec: dict) -> bool:
     """True when the chosen style uses background artwork, so we only pay for
     image generation when the design actually places one."""
     return spec.get("background_style") == "image"
+
+
+def _pick_angles(angle_titles: list[str], topic: str) -> list[str]:
+    """Choose three distinct grounded angles, rotating by topic so runs vary."""
+    seen, uniq = set(), []
+    for a in angle_titles:
+        k = a.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(a)
+    if len(uniq) <= 3:
+        return (uniq + ["the warning signs", "simple steps that help", "why it matters to you"])[:3]
+    start = abs(hash(topic)) % len(uniq)
+    return [uniq[(start + i) % len(uniq)] for i in range(3)]
 
 
 def _brand_moods(kit: dict) -> list[str]:
@@ -239,11 +253,15 @@ def _generate_posters(req: PosterRequest) -> dict:
     if fresh:
         docs = docs + [fresh]
 
-    # Creative director brainstorms fresh, topic-specific angles each run.
-    angles = director.brainstorm_angles(req.topic, settings)
+    # Curate: synthesize a grounded research brief + distinct angles from the
+    # retrieved knowledge and live research, then pick three angles to explore.
+    brief_obj = curation.synthesize_brief(req.topic, docs, settings)
+    angle_titles = [a["title"] for a in brief_obj["angles"]]
+    angles = _pick_angles(angle_titles, req.topic)
     try:
-        variants = content.generate(req.topic, settings, knowledge_docs=docs,
-                                    angles=angles, brand_block=brand_block)
+        variants, review = content.generate_reviewed(
+            req.topic, settings, knowledge_docs=docs, angles=angles,
+            brand_block=brand_block, brief=brief_obj["synthesis"])
     except ValueError as e:
         raise HTTPException(502, f"Could not write poster copy for this topic ({e}). Try rephrasing the topic.")
 
@@ -278,10 +296,12 @@ def _generate_posters(req: PosterRequest) -> dict:
                   "pptx_download": None}
         try:
             option["edit_url"] = canva.import_design(settings, pptx, variants[0]["headline"])
-        except canva.CanvaError as e:
+        except Exception as e:
             option["warnings"].append(f"Canva import failed ({e}).")
             option["pptx_download"] = f"/api/download/{pptx.name}"
-        return {"options": [option], "knowledge_used": [d["title"] for d in docs]}
+        return {"options": [option], "knowledge_used": [d["title"] for d in docs],
+                "content_score": (review or {}).get("score") if review else None,
+                "grounded": brief_obj["grounded"]}
 
     orientations = ["portrait", "landscape"] if req.orientation == "both" else [req.orientation]
     jobs = [(variant, dict(spec), o)
@@ -293,7 +313,9 @@ def _generate_posters(req: PosterRequest) -> dict:
         ))
 
     history.remember(specs)
-    return {"options": options, "knowledge_used": [d["title"] for d in docs]}
+    return {"options": options, "knowledge_used": [d["title"] for d in docs],
+            "content_score": (review or {}).get("score") if review else None,
+            "grounded": brief_obj["grounded"]}
 
 
 @app.get("/api/download/{filename}")

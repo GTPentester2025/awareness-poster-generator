@@ -36,8 +36,11 @@ Pick the single best recipe id for EACH concept so that:
 - the three chosen recipes use THREE DIFFERENT layouts (no repeats),
 - together they feel like a varied, expert set — not three of the same look.
 
-Also write a short, vivid IMAGE SUBJECT for each concept: what the background
-artwork should depict (topic-relevant, concrete, NO text in the image).
+Also write a short, vivid IMAGE SUBJECT for each concept: it must depict a
+CONCRETE scene drawn from that concept's own headline/points — not a generic
+topic icon. BAN these clichés unless a point literally teaches them: padlock,
+hooded hacker, envelope, shield, generic binary code, fingerprint. Prefer real
+human moments, environments, or objects specific to the concept. NO text in the image.
 
 Return ONLY JSON:
 {{"selections": [
@@ -111,7 +114,9 @@ def select_recipes(variants: list[dict], shortlist_recipes: list[dict],
         shortlist_view = [recipe_lib.summarize(r) for r in shortlist_recipes]
         payload = {
             "concepts": [{"index": i, "angle": v.get("angle"), "headline": v.get("headline"),
-                          "subheadline": v.get("subheadline")} for i, v in enumerate(variants)],
+                          "subheadline": v.get("subheadline"),
+                          "points": [p.get("text") for p in v.get("points", [])]}
+                         for i, v in enumerate(variants)],
             "shortlist": shortlist_view,
         }
         prompt = ART_PROMPT + "\n\nDATA:\n" + json.dumps(payload)

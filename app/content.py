@@ -89,25 +89,17 @@ def validate_content(data: dict) -> dict:
 
 
 def generate(topic: str, settings: Settings, knowledge_docs: list[dict] | None = None,
-             angles: list[str] | None = None, brand_block: str = "",
-             client=None) -> list[dict]:
+             angles: list[str] | None = None, brand_block: str = "", brief: str = "",
+             feedback: list[str] | None = None, client=None) -> list[dict]:
     """Returns 3 validated content variants. Retries once, then raises ValueError.
-    `angles`: three assigned angles (server-sampled for run-to-run variety).
-    `brand_block`: serialized brand kit steering tone."""
+    `angles`: three assigned angles (grounded, from curation.synthesize_brief).
+    `brand_block`: serialized brand kit steering tone. `brief`: research
+    synthesis to ground copy. `feedback`: reviewer notes from a prior draft."""
     if client is None:
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
 
-    user = f"Awareness poster topic: {topic}"
-    if angles:
-        user += ("\n\nUse EXACTLY these three angles, one per concept in order — keep each "
-                 "concept's framing true to its angle:\n"
-                 + "\n".join(f"{i+1}. {a}" for i, a in enumerate(angles[:3])))
-    if brand_block:
-        user += f"\n\nBRAND (match this voice; mention the org naturally in the CTA if it fits):\n{brand_block}"
-    if knowledge_docs:
-        ref = "\n\n".join(f"### {d['title']}\n{d['body']}" for d in knowledge_docs)
-        user += f"\n\nREFERENCE MATERIAL (use these facts, cite these sources):\n{ref}"
+    user = _build_user_prompt(topic, angles, brand_block, knowledge_docs, brief, feedback)
 
     last_err = None
     for _ in range(2):
@@ -124,6 +116,86 @@ def generate(topic: str, settings: Settings, knowledge_docs: list[dict] | None =
         except (ValueError, json.JSONDecodeError) as e:
             last_err = e
     raise ValueError(f"content generation failed: {last_err}")
+
+
+def _build_user_prompt(topic, angles, brand_block, knowledge_docs, brief, feedback) -> str:
+    user = f"Awareness poster topic: {topic}"
+    if brief:
+        user += f"\n\nRESEARCH BRIEF (ground the copy in this):\n{brief}"
+    if angles:
+        user += ("\n\nUse EXACTLY these three angles, one per concept in order — keep each "
+                 "concept's framing true to its angle:\n"
+                 + "\n".join(f"{i+1}. {a}" for i, a in enumerate(angles[:3])))
+    if brand_block:
+        user += f"\n\nBRAND (match this voice; mention the org naturally in the CTA if it fits):\n{brand_block}"
+    if knowledge_docs:
+        ref = "\n\n".join(f"### {d['title']}\n{d['body']}" for d in knowledge_docs)
+        user += f"\n\nREFERENCE MATERIAL (use these facts, cite these sources):\n{ref}"
+    if feedback:
+        user += ("\n\nA reviewer rejected the previous draft. Fix ALL of these, keeping what worked:\n- "
+                 + "\n- ".join(feedback))
+    return user
+
+
+REVIEW_PROMPT = """You are a strict awareness-poster copy reviewer. Score the three concepts
+for a poster on topic "{topic}".
+
+Judge: on-topic relevance, factual soundness, distinctness of the three angles,
+punchiness, and whether each point is concrete (not vague filler). Be harsh.
+
+Return ONLY JSON:
+{{"score": <0-100 overall>,
+  "feedback": ["<each specific, actionable fix — name the concept and what is wrong>"]}}
+An accepted draft (score >= 88) may still list minor feedback."""
+
+PASS_SCORE = 88
+
+
+def review(variants: list[dict], topic: str, settings: Settings, client=None) -> dict:
+    """Independent reviewer: score 0-100 + specific feedback. None on failure."""
+    try:
+        if client is None:
+            from openai import OpenAI
+            client = OpenAI(api_key=settings.openai_api_key)
+        payload = json.dumps([{"angle": v["angle"], "headline": v["headline"],
+                               "subheadline": v["subheadline"],
+                               "points": [p["text"] for p in v["points"]], "cta": v["cta"]}
+                              for v in variants])
+        resp = client.chat.completions.create(
+            model=settings.openai_text_model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": REVIEW_PROMPT.format(topic=topic) + "\n\nDRAFT:\n" + payload}],
+        )
+        data = json.loads(resp.choices[0].message.content)
+        score = data.get("score")
+        if not isinstance(score, (int, float)):
+            return None
+        return {"score": max(0, min(100, int(score))),
+                "feedback": [f for f in data.get("feedback", []) if isinstance(f, str)][:6]}
+    except Exception:
+        return None
+
+
+def generate_reviewed(topic: str, settings: Settings, knowledge_docs=None, angles=None,
+                      brand_block="", brief="", max_rounds: int = 2, client=None):
+    """Generate → review → rework with full feedback history until score >=
+    PASS_SCORE or rounds exhausted. Returns (variants, review_dict|None)."""
+    history: list[str] = []
+    best = None
+    best_review = None
+    for _ in range(max_rounds):
+        variants = generate(topic, settings, knowledge_docs=knowledge_docs, angles=angles,
+                            brand_block=brand_block, brief=brief,
+                            feedback=history or None, client=client)
+        verdict = review(variants, topic, settings, client=client)
+        if verdict is None:
+            return variants, None
+        if best_review is None or verdict["score"] > best_review["score"]:
+            best, best_review = variants, verdict
+        if verdict["score"] >= PASS_SCORE or not verdict["feedback"]:
+            return variants, verdict
+        history = verdict["feedback"]  # full feedback re-enters the next draft
+    return best, best_review
 
 
 def to_legacy(variant: dict) -> dict:

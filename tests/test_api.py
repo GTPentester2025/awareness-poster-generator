@@ -19,8 +19,13 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main.history, "avoid_block", lambda path=None: "")
     monkeypatch.setattr(main.history, "remember", lambda specs, path=None: None)
     monkeypatch.setattr(main.brand, "DEFAULT_PATH", tmp_path / "brand.json")
-    monkeypatch.setattr(main.director, "brainstorm_angles",
-                        lambda topic, s, n=7, client=None: ["angle a", "angle b", "angle c"])
+    monkeypatch.setattr(main.curation, "synthesize_brief",
+                        lambda topic, docs, s, client=None: {
+                            "synthesis": "brief", "grounded": bool(docs),
+                            "angles": [{"title": "angle a", "rationale": "", "key_facts": []},
+                                       {"title": "angle b", "rationale": "", "key_facts": []},
+                                       {"title": "angle c", "rationale": "", "key_facts": []},
+                                       {"title": "angle d", "rationale": "", "key_facts": []}]})
     monkeypatch.setattr(main.recipes, "shortlist", lambda moods, k=15, seed=0: [{"archetype": "hero_top"}])
     monkeypatch.setattr(main.director, "select_recipes",
                         lambda variants, pool, s, client=None: [{"recipe": {}, "image_subject": ""} for _ in variants])
@@ -50,7 +55,8 @@ SPECS = [
 def _happy_mocks(monkeypatch, tmp_path):
     fake_pptx = tmp_path / "poster_x.pptx"
     fake_pptx.write_bytes(b"pptx")
-    monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, angles=None, brand_block="", client=None: [dict(v) for v in VARIANTS])
+    monkeypatch.setattr(main.content, "generate_reviewed",
+                        lambda topic, s, knowledge_docs=None, angles=None, brand_block="", brief="", client=None: ([dict(v) for v in VARIANTS], {"score": 92, "feedback": []}))
     specs_iter = iter([dict(x) for x in SPECS])
     monkeypatch.setattr(main.recipes, "recipe_to_spec", lambda recipe, subject="": next(specs_iter))
     monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
@@ -90,9 +96,9 @@ def test_poster_not_connected_401_before_generation(client, monkeypatch):
 
     def content_gen(*a, **kw):
         called["content"] = True
-        return [dict(v) for v in VARIANTS]
+        return [dict(v) for v in VARIANTS], {"score": 90, "feedback": []}
 
-    monkeypatch.setattr(main.content, "generate", content_gen)
+    monkeypatch.setattr(main.content, "generate_reviewed", content_gen)
     r = client.post("/api/posters", json={"topic": "x", "orientation": "portrait"})
     assert r.status_code == 401
     assert called["content"] is False  # no OpenAI spend without Canva connection
@@ -122,7 +128,8 @@ def test_poster_direction_failure_falls_back_to_single(client, monkeypatch, tmp_
     _connect(tmp_path)
     fake_pptx = tmp_path / "poster_fb.pptx"
     fake_pptx.write_bytes(b"pptx")
-    monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, angles=None, brand_block="", client=None: [dict(v) for v in VARIANTS])
+    monkeypatch.setattr(main.content, "generate_reviewed",
+                        lambda topic, s, knowledge_docs=None, angles=None, brand_block="", brief="", client=None: ([dict(v) for v in VARIANTS], {"score": 90, "feedback": []}))
 
     def boom(*a, **kw):
         raise ValueError("recipe selection failed")
