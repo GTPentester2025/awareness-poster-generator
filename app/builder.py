@@ -145,6 +145,30 @@ def _draw_headline(slide, x, y, w, h, text, spec, color, size_pt, align="left", 
               bold=True, align=_ALIGN_MAP.get(align, PP_ALIGN.LEFT), font=spec["fonts"]["heading"])
 
 
+def _badge_w(badge_h, stat) -> int:
+    """Chip width scaled to character count, so multi-char stats always get a
+    single horizontal line (never a cramped vertical stack)."""
+    n = len(str(stat))
+    if n <= 1:
+        return badge_h
+    return min(int(badge_h * (1.0 + 0.52 * (n - 1))), int(badge_h * 2.7))
+
+
+def _stat_badge(slide, x, y, badge_h, stat, accent, heading_font):
+    """Draw a stat chip sized to its content; circle only for a single char,
+    otherwise a rounded pill wide enough for the text. Returns chip width."""
+    stat = str(stat)
+    bw = _badge_w(badge_h, stat)
+    if len(stat) <= 1:
+        _add_auto_shape(slide, "ellipse", x, y, bw, badge_h, accent)
+    else:
+        _rounded(slide, x, y, bw, badge_h, accent)
+    stat_pt = max(9, min(15, int(badge_h / 12700 * 0.4)))
+    _add_text(slide, x, y, bw, badge_h, stat, stat_pt, _readable(accent),
+              bold=True, align=PP_ALIGN.CENTER, font=heading_font, wrap=False, middle=True)
+    return bw
+
+
 def _card(slide, x, y, w, h, spec, stat, text, show_badge=True):
     pal, style = spec["palette"], spec["card_style"]
     surface, accent = pal["surface"], pal["accent"]
@@ -159,25 +183,35 @@ def _card(slide, x, y, w, h, spec, stat, text, show_badge=True):
         _rounded(slide, x, y, w, h, surface, opacity=1.0)
     text_color = _readable(surface)
     stat = str(stat)
-    if show_badge and stat:
-        # stat badge, vertically centered on the card's left edge
-        bh = int(min(h * 0.5, w * 0.2))
-        bw = bh if len(stat) <= 3 else int(bh * min(1.9, 0.72 + 0.22 * len(stat)))
-        bx, by = x + pad, y + (h - bh) // 2
-        if len(stat) <= 3:
-            _add_auto_shape(slide, "ellipse", bx, by, bw, bh, accent)
-        else:
-            _rounded(slide, bx, by, bw, bh, accent)
-        _add_text(slide, bx, by, bw, bh, stat, _fit(13, stat, 5), _readable(accent),
-                  bold=True, align=PP_ALIGN.CENTER, font=spec["fonts"]["heading"], wrap=False, middle=True)
-        tx = bx + bw + pad
+    if not (show_badge and stat):
+        _add_text(slide, x + pad, y + int(pad * 0.5), w - 2 * pad, h - pad, text,
+                  _fit(15, text, 52), text_color, align=PP_ALIGN.LEFT,
+                  font=spec["fonts"]["body"], middle=True)
+        return
+
+    heading = spec["fonts"]["heading"]
+    badge_h = min(int(h * 0.4), int(w * 0.2))
+    badge_h = max(badge_h, 210000)
+    if badge_h > int(h * 0.72):
+        badge_h = int(h * 0.72)
+    est_bw = _badge_w(badge_h, stat)
+
+    if h >= badge_h * 2.4 and (w - est_bw - 3 * pad) < int(w * 0.55):
+        # tall, narrowish card → stack the chip above the text
+        bx, by = x + pad, y + pad
+        _stat_badge(slide, bx, by, badge_h, stat, accent, heading)
+        ty = by + badge_h + int(pad * 0.5)
+        _add_text(slide, x + pad, ty, w - 2 * pad, y + h - pad - ty, text,
+                  _fit(15, text, 46), text_color, align=PP_ALIGN.LEFT,
+                  font=spec["fonts"]["body"], middle=True)
     else:
-        tx = x + pad
-    # body text fills the remaining width and is vertically centered so cards
-    # never look half-empty
-    _add_text(slide, tx, y + int(pad * 0.5), x + w - tx - pad, h - pad, text,
-              _fit(15, text, 52), text_color, align=PP_ALIGN.LEFT,
-              font=spec["fonts"]["body"], middle=True)
+        # side-by-side chip; text takes the rest, vertically centered
+        bx, by = x + pad, y + (h - badge_h) // 2
+        bw = _stat_badge(slide, bx, by, badge_h, stat, accent, heading)
+        tx = bx + bw + pad
+        _add_text(slide, tx, y + int(pad * 0.4), x + w - tx - pad, h - int(pad * 0.8), text,
+                  _fit(14, text, 50), text_color, align=PP_ALIGN.LEFT,
+                  font=spec["fonts"]["body"], middle=True)
 
 
 def _draw_facts(slide, x, y, w, h, facts, stats, spec, cols):
@@ -205,8 +239,9 @@ def _draw_facts(slide, x, y, w, h, facts, stats, spec, cols):
 def _draw_cta(slide, x, y, w, h, text, spec):
     pal = spec["palette"]
     _rounded(slide, x, y, w, h, pal["accent"], opacity=1.0)
-    _add_text(slide, x, int(y + h * 0.26), w, int(h * 0.5), text, _fit(22, text, 34),
-              _readable(pal["accent"]), bold=True, align=PP_ALIGN.CENTER, font=spec["fonts"]["heading"])
+    _add_text(slide, int(x + w * 0.04), y, int(w * 0.92), h, text, _fit(22, text, 24),
+              _readable(pal["accent"]), bold=True, align=PP_ALIGN.CENTER,
+              font=spec["fonts"]["heading"], middle=True)
 
 
 def _decor(slide, w, h, spec):
@@ -287,7 +322,7 @@ def render(spec: dict, content: dict, image: Path | None, orientation: str, out_
         else:
             _add_rect(slide, 0, 0, w, ih, pal["accent"])
             head_color = _readable(pal["accent"])
-        _draw_headline(slide, m, int(h * 0.27), w - 2 * m, int(h * 0.14), content["headline"],
+        _draw_headline(slide, m, int(h * 0.13), w - 2 * m, int(h * 0.18), content["headline"],
                        spec, head_color, 42 if not landscape else 34, "left", panel=has_img)
         _add_text(slide, m, int(h * 0.47), w - 2 * m, int(h * 0.06), content["subheadline"],
                   _fit(18, content["subheadline"], 60), _readable(pal["bg"]), font=spec["fonts"]["body"])
@@ -335,11 +370,11 @@ def render(spec: dict, content: dict, image: Path | None, orientation: str, out_
         _draw_headline(slide, m, int(h * 0.26), w - 2 * m, int(h * 0.2), content["headline"],
                        spec, "#FFFFFF" if has_img else _readable(pal["bg"]),
                        50 if not landscape else 40, "center", panel=has_img)
-        _add_text(slide, m, int(h * 0.48), w - 2 * m, int(h * 0.07), content["subheadline"],
+        _add_text(slide, m, int(h * 0.46), w - 2 * m, int(h * 0.07), content["subheadline"],
                   18, "#FFFFFF" if has_img else _readable(pal["bg"]), align=PP_ALIGN.CENTER,
                   font=spec["fonts"]["body"])
-        _draw_facts(slide, m, int(h * 0.58), w - 2 * m, int(h * 0.24), facts, stats, spec,
-                    cols=min(len(facts), 3) if landscape else 1)
+        _draw_facts(slide, m, int(h * 0.55), w - 2 * m, int(h * 0.30), facts, stats, spec,
+                    cols=2 if len(facts) > 2 else 1)
         _draw_cta(slide, int(w * 0.25), int(h * 0.86), int(w * 0.5), int(h * 0.09), content["cta"], spec)
 
     elif arch == "big_number":
@@ -468,9 +503,18 @@ def render(spec: dict, content: dict, image: Path | None, orientation: str, out_
             _scrim(slide, 0, int(h * 0.7), band, int(h * 0.3), pal["bg"], 0.6)
         else:
             _add_rect(slide, 0, 0, band, h, pal["accent"])
-            if spec["accent_shapes"]:
-                _add_auto_shape(slide, "ellipse", int(band * 0.2), int(h * 0.35), int(band * 0.6),
-                                int(band * 0.6), pal["bg"], opacity=0.3)
+            # fill the empty solid panel with a large reversed stat + motif so
+            # it never reads as dead space
+            _add_auto_shape(slide, "ellipse", int(band * 0.15), int(h * 0.5), int(band * 0.8),
+                            int(band * 0.8), pal["bg"], opacity=0.18)
+            lead = stats[0] if stats else ""
+            if lead:
+                _add_text(slide, int(band * 0.08), int(h * 0.16), int(band * 0.84), int(h * 0.22),
+                          str(lead)[:6], _fit(64, str(lead)[:6], 5), _readable(pal["accent"]),
+                          bold=True, align=PP_ALIGN.CENTER, font=spec["fonts"]["heading"], wrap=False)
+            _add_text(slide, int(band * 0.1), int(h * 0.42), int(band * 0.8), int(h * 0.3),
+                      content["subheadline"], _fit(16, content["subheadline"], 50),
+                      _readable(pal["accent"]), align=PP_ALIGN.CENTER, font=spec["fonts"]["body"], middle=True)
         base_color = _readable(pal["bg"])
         _draw_headline(slide, cx0, int(h * 0.07), w - cx0 - m, int(h * 0.16), content["headline"],
                        spec, base_color, 34 if not landscape else 30, "left")
