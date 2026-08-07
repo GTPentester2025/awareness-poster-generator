@@ -98,6 +98,22 @@ def _fit(base_pt: int, text: str, comfortable_chars: int) -> int:
     return max(9, int(base_pt * scale))
 
 
+def _fit_box(base_pt: int, text: str, w_emu: int, h_emu: int, min_pt: int = 10) -> int:
+    """Size text to actually FILL a box: start at base_pt and step down only
+    until the wrapped text fits the box's width AND height. Gives large,
+    space-filling text in roomy cards instead of a timid fixed size."""
+    import math
+    w_pt = max(1, w_emu / 12700)
+    h_pt = max(1, h_emu / 12700)
+    n = max(1, len(text))
+    for pt in range(base_pt, min_pt - 1, -1):
+        chars_per_line = max(1, int(w_pt / (pt * 0.52)))
+        lines = math.ceil(n / chars_per_line)
+        if lines * pt * 1.22 <= h_pt:
+            return pt
+    return min_pt
+
+
 def _rounded(slide, x, y, w, h, hex_fill, opacity=1.0, line_hex=None):
     from pptx.enum.shapes import MSO_SHAPE
     shp = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
@@ -191,33 +207,36 @@ def _card(slide, x, y, w, h, spec, stat, text, show_badge=True):
     text_color = _readable(surface)
     stat = str(stat)
     if not (show_badge and stat):
-        _add_text(slide, x + pad, y + int(pad * 0.5), w - 2 * pad, h - pad, text,
-                  _fit(15, text, 52), text_color, align=PP_ALIGN.LEFT,
+        tw, th = w - 2 * pad, h - pad
+        _add_text(slide, x + pad, y + int(pad * 0.5), tw, th, text,
+                  _fit_box(20, text, tw, th), text_color, align=PP_ALIGN.LEFT,
                   font=spec["fonts"]["body"], middle=True)
         return
 
     heading = spec["fonts"]["heading"]
-    badge_h = min(int(h * 0.4), int(w * 0.2))
-    badge_h = max(badge_h, 210000)
-    if badge_h > int(h * 0.72):
-        badge_h = int(h * 0.72)
+    badge_h = min(int(h * 0.32), int(w * 0.16))
+    badge_h = max(badge_h, 200000)
+    if badge_h > int(h * 0.6):
+        badge_h = int(h * 0.6)
     est_bw = _badge_w(badge_h, stat)
 
     if h >= badge_h * 2.4 and (w - est_bw - 3 * pad) < int(w * 0.55):
         # tall, narrowish card → stack the chip above the text
         bx, by = x + pad, y + pad
         _stat_badge(slide, bx, by, badge_h, stat, accent, heading)
-        ty = by + badge_h + int(pad * 0.5)
-        _add_text(slide, x + pad, ty, w - 2 * pad, y + h - pad - ty, text,
-                  _fit(15, text, 46), text_color, align=PP_ALIGN.LEFT,
+        ty = by + badge_h + int(pad * 0.4)
+        tw, th = w - 2 * pad, y + h - pad - ty
+        _add_text(slide, x + pad, ty, tw, th, text,
+                  _fit_box(19, text, tw, th), text_color, align=PP_ALIGN.LEFT,
                   font=spec["fonts"]["body"], middle=True)
     else:
         # side-by-side chip; text takes the rest, vertically centered
         bx, by = x + pad, y + (h - badge_h) // 2
         bw = _stat_badge(slide, bx, by, badge_h, stat, accent, heading)
         tx = bx + bw + pad
-        _add_text(slide, tx, y + int(pad * 0.4), x + w - tx - pad, h - int(pad * 0.8), text,
-                  _fit(14, text, 50), text_color, align=PP_ALIGN.LEFT,
+        tw, th = x + w - tx - pad, h - int(pad * 0.8)
+        _add_text(slide, tx, y + int(pad * 0.4), tw, th, text,
+                  _fit_box(18, text, tw, th), text_color, align=PP_ALIGN.LEFT,
                   font=spec["fonts"]["body"], middle=True)
 
 
