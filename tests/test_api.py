@@ -19,6 +19,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main.history, "avoid_block", lambda path=None: "")
     monkeypatch.setattr(main.history, "remember", lambda specs, path=None: None)
     monkeypatch.setattr(main.brand, "DEFAULT_PATH", tmp_path / "brand.json")
+    monkeypatch.setattr(main.director, "brainstorm_angles",
+                        lambda topic, s, n=7, client=None: ["angle a", "angle b", "angle c"])
+    monkeypatch.setattr(main.recipes, "shortlist", lambda moods, k=15, seed=0: [{"archetype": "hero_top"}])
+    monkeypatch.setattr(main.director, "select_recipes",
+                        lambda variants, pool, s, client=None: [{"recipe": {}, "image_subject": ""} for _ in variants])
     return TestClient(main.app)
 
 
@@ -46,7 +51,8 @@ def _happy_mocks(monkeypatch, tmp_path):
     fake_pptx = tmp_path / "poster_x.pptx"
     fake_pptx.write_bytes(b"pptx")
     monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, angles=None, brand_block="", client=None: [dict(v) for v in VARIANTS])
-    monkeypatch.setattr(main.design, "generate_directions", lambda v, o, s, brand_block="", avoid_block="", fix_hints=None, client=None: [dict(x) for x in SPECS])
+    specs_iter = iter([dict(x) for x in SPECS])
+    monkeypatch.setattr(main.recipes, "recipe_to_spec", lambda recipe, subject="": next(specs_iter))
     monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
     monkeypatch.setattr(main.builder, "render", lambda spec, variant, i, o, d: fake_pptx)
     monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/d1")
@@ -119,9 +125,9 @@ def test_poster_direction_failure_falls_back_to_single(client, monkeypatch, tmp_
     monkeypatch.setattr(main.content, "generate", lambda topic, s, knowledge_docs=None, angles=None, brand_block="", client=None: [dict(v) for v in VARIANTS])
 
     def boom(*a, **kw):
-        raise ValueError("style direction failed")
+        raise ValueError("recipe selection failed")
 
-    monkeypatch.setattr(main.design, "generate_directions", boom)
+    monkeypatch.setattr(main.recipes, "shortlist", boom)
     monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
     monkeypatch.setattr(main.builder, "fallback_build", lambda c, i, o, d: fake_pptx)
     monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/fb")

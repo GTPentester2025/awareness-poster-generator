@@ -6,6 +6,9 @@ import json
 
 from app.config import Settings
 
+# Legacy angle vocabulary — kept only as a fallback. The creative director
+# (app.director) now brainstorms fresh, topic-specific angles per run, so the
+# angle field is free-form text and no longer constrained to this set.
 ANGLES = {"precautions", "red_flags", "impact", "myths_vs_facts", "stats", "checklist", "steps"}
 MIN_POINTS, MAX_POINTS = 3, 6
 
@@ -51,8 +54,8 @@ def _txt(value, max_len, name):
 def validate_variant(v: dict) -> dict:
     if not isinstance(v, dict):
         raise ValueError("variant must be an object")
-    if v.get("angle") not in ANGLES:
-        v["angle"] = "precautions"
+    angle = v.get("angle")
+    v["angle"] = angle.strip()[:60] if isinstance(angle, str) and angle.strip() else "awareness"
     _txt(v.get("headline"), 60, "headline")
     _txt(v.get("subheadline"), 120, "subheadline")
     _txt(v.get("cta"), 80, "cta")
@@ -79,7 +82,7 @@ def validate_content(data: dict) -> dict:
     if not isinstance(variants, list) or len(variants) != 3:
         raise ValueError("need exactly 3 variants")
     data["variants"] = [validate_variant(v) for v in variants]
-    angles = [v["angle"] for v in data["variants"]]
+    angles = [v["angle"].lower() for v in data["variants"]]
     if len(set(angles)) < 2:
         raise ValueError("variants must use different angles")
     return data
@@ -97,7 +100,9 @@ def generate(topic: str, settings: Settings, knowledge_docs: list[dict] | None =
 
     user = f"Awareness poster topic: {topic}"
     if angles:
-        user += f"\n\nAssigned angles, one per concept in order: {', '.join(angles[:3])}"
+        user += ("\n\nUse EXACTLY these three angles, one per concept in order — keep each "
+                 "concept's framing true to its angle:\n"
+                 + "\n".join(f"{i+1}. {a}" for i, a in enumerate(angles[:3])))
     if brand_block:
         user += f"\n\nBRAND (match this voice; mention the org naturally in the CTA if it fits):\n{brand_block}"
     if knowledge_docs:

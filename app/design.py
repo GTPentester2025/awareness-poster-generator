@@ -24,6 +24,12 @@ ALLOWED_FONTS = {
     "Merriweather", "Oswald", "Raleway", "Anton", "Bebas Neue", "Archivo",
     "Nunito", "Work Sans", "Georgia", "Arial", "League Spartan", "Abril Fatface",
     "Lora", "PT Sans", "Quicksand",
+    # 2026 library additions (Google/Canva-available)
+    "Inter", "Space Grotesk", "Space Mono", "Archivo Black", "Source Sans 3",
+    "Fraunces", "Outfit", "Manrope", "DM Serif Display", "DM Sans",
+    "Plus Jakarta Sans", "Cormorant Garamond", "Jost", "Bodoni Moda",
+    "Libre Baskerville", "EB Garamond", "Karla", "Cinzel", "Syne",
+    "Crimson Pro", "Mulish", "Josefin Sans", "Nunito Sans",
 }
 DEFAULT_HEADING = "Montserrat"
 DEFAULT_BODY = "Open Sans"

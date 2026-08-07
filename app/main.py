@@ -1,5 +1,4 @@
 import os
-import random
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -9,7 +8,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from app import artwork, brand, builder, canva, content, critique, design, envfile, history, knowledge, research
+from app import (artwork, brand, builder, canva, content, critique, design, director,
+                 envfile, history, knowledge, recipes, research)
 from app.config import load_settings
 
 app = FastAPI(title="Awareness Poster Generator")
@@ -50,6 +50,26 @@ def _plan_uses_image(spec: dict) -> bool:
     """True when the chosen style uses background artwork, so we only pay for
     image generation when the design actually places one."""
     return spec.get("background_style") == "image"
+
+
+def _brand_moods(kit: dict) -> list[str]:
+    """Map a brand's ideology text to recipe moods so selection leans on-brand.
+    Empty list = no preference (full library in play)."""
+    about = (kit.get("about") or "").lower()
+    hits = []
+    cues = {
+        "corporate": ["enterprise", "b2b", "corporate", "compliance", "finance", "bank"],
+        "playful": ["fun", "playful", "kids", "youth", "vibrant", "community"],
+        "activist": ["activist", "campaign", "rights", "justice", "advocacy", "non-profit", "nonprofit"],
+        "calm": ["wellness", "health", "mindful", "calm", "care", "support"],
+        "urgent": ["emergency", "urgent", "alert", "safety", "crisis", "threat"],
+        "editorial": ["magazine", "editorial", "story", "journal", "research"],
+        "modern": ["tech", "startup", "saas", "digital", "innovation"],
+    }
+    for mood, words in cues.items():
+        if any(w in about for w in words):
+            hits.append(mood)
+    return hits
 
 
 def _config_status() -> dict:
@@ -210,15 +230,26 @@ def create_poster(req: PosterRequest):
     if fresh:
         docs = docs + [fresh]
 
-    angles = random.sample(sorted(content.ANGLES), 3)
+    # Creative director brainstorms fresh, topic-specific angles each run.
+    angles = director.brainstorm_angles(req.topic, settings)
     variants = content.generate(req.topic, settings, knowledge_docs=docs,
                                 angles=angles, brand_block=brand_block)
 
     base_orientation = "portrait" if req.orientation == "both" else req.orientation
+    # Art director selects the best template recipe per concept from a diverse
+    # shortlist of the 1,900+ recipe library (biased by brand colors if set).
     try:
-        specs = design.generate_directions(variants, base_orientation, settings,
-                                           brand_block=brand_block,
-                                           avoid_block=history.avoid_block())
+        seed = abs(hash(req.topic)) % 997
+        pool = recipes.shortlist(_brand_moods(kit), k=15, seed=seed)
+        selections = director.select_recipes(variants, pool, settings)
+        specs = []
+        for sel in selections:
+            spec = recipes.recipe_to_spec(sel["recipe"], sel.get("image_subject", ""))
+            if kit.get("colors"):
+                spec["palette"]["accent"] = kit["colors"][0]
+                if len(kit["colors"]) > 1:
+                    spec["palette"]["bg"] = kit["colors"][1]
+            specs.append(spec)
     except Exception:
         specs = None
 

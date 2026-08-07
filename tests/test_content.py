@@ -55,10 +55,17 @@ def test_valid_variants_pass():
     assert len(out["variants"][1]["points"]) == 4
 
 
-def test_unknown_angle_coerced():
+def test_freeform_angle_preserved():
+    # angles are now free-form (creative director invents them); kept verbatim
     v = json.loads(json.dumps(VARIANT))
-    v["angle"] = "interpretive_dance"
-    assert validate_variant(v)["angle"] == "precautions"
+    v["angle"] = "the 3-second hover test"
+    assert validate_variant(v)["angle"] == "the 3-second hover test"
+
+
+def test_blank_angle_defaults():
+    v = json.loads(json.dumps(VARIANT))
+    v["angle"] = "   "
+    assert validate_variant(v)["angle"] == "awareness"
 
 
 def test_missing_stat_gets_number():

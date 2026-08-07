@@ -45,10 +45,13 @@ def _add_rect(slide, x, y, w, h, hex_color, transparency_pct=0):
     return rect
 
 
-def _add_text(slide, x, y, w, h, text, size_pt, hex_color, bold=False, align=PP_ALIGN.LEFT, font=None, wrap=True):
+def _add_text(slide, x, y, w, h, text, size_pt, hex_color, bold=False, align=PP_ALIGN.LEFT, font=None, wrap=True, middle=False):
     box = slide.shapes.add_textbox(Emu(x), Emu(y), Emu(w), Emu(h))
     tf = box.text_frame
     tf.word_wrap = wrap
+    if middle:
+        from pptx.enum.text import MSO_ANCHOR
+        tf.vertical_anchor = MSO_ANCHOR.MIDDLE
     para = tf.paragraphs[0]
     para.alignment = align
     run = para.add_run()
@@ -142,12 +145,12 @@ def _draw_headline(slide, x, y, w, h, text, spec, color, size_pt, align="left", 
               bold=True, align=_ALIGN_MAP.get(align, PP_ALIGN.LEFT), font=spec["fonts"]["heading"])
 
 
-def _card(slide, x, y, w, h, spec, stat, text):
+def _card(slide, x, y, w, h, spec, stat, text, show_badge=True):
     pal, style = spec["palette"], spec["card_style"]
     surface, accent = pal["surface"], pal["accent"]
-    pad = int(min(w, h) * 0.08)
+    pad = int(min(w, h) * 0.09)
     if style == "soft_shadow":
-        off = int(min(w, h) * 0.04)
+        off = int(min(w, h) * 0.035)
         _rounded(slide, x + off, y + off, w, h, pal["muted"], opacity=0.35)
         _rounded(slide, x, y, w, h, surface, opacity=1.0)
     elif style == "outline":
@@ -155,22 +158,26 @@ def _card(slide, x, y, w, h, spec, stat, text):
     else:  # filled
         _rounded(slide, x, y, w, h, surface, opacity=1.0)
     text_color = _readable(surface)
-    # stat badge: circle for short stats, pill for longer ones — no mid-word clipping
     stat = str(stat)
-    bh = int(min(h * 0.55, w * 0.2))
-    bw = bh if len(stat) <= 3 else int(bh * min(1.9, 0.7 + 0.24 * len(stat)))
-    bx, by = x + pad, y + (h - bh) // 2
-    shape_kind = "ellipse" if len(stat) <= 3 else "pill"
-    if shape_kind == "pill":
-        _rounded(slide, bx, by, bw, bh, accent)
+    if show_badge and stat:
+        # stat badge, vertically centered on the card's left edge
+        bh = int(min(h * 0.5, w * 0.2))
+        bw = bh if len(stat) <= 3 else int(bh * min(1.9, 0.72 + 0.22 * len(stat)))
+        bx, by = x + pad, y + (h - bh) // 2
+        if len(stat) <= 3:
+            _add_auto_shape(slide, "ellipse", bx, by, bw, bh, accent)
+        else:
+            _rounded(slide, bx, by, bw, bh, accent)
+        _add_text(slide, bx, by, bw, bh, stat, _fit(13, stat, 5), _readable(accent),
+                  bold=True, align=PP_ALIGN.CENTER, font=spec["fonts"]["heading"], wrap=False, middle=True)
+        tx = bx + bw + pad
     else:
-        _add_auto_shape(slide, "ellipse", bx, by, bw, bh, accent)
-    _add_text(slide, bx, by + int(bh * 0.22), bw, int(bh * 0.6), stat,
-              _fit(12, stat, 5), _readable(accent), bold=True, align=PP_ALIGN.CENTER,
-              font=spec["fonts"]["heading"], wrap=False)
-    tx = bx + bw + pad
-    _add_text(slide, tx, y + int(pad * 0.6), x + w - tx - pad, h - int(pad * 1.2), text,
-              _fit(13, text, 48), text_color, align=PP_ALIGN.LEFT, font=spec["fonts"]["body"])
+        tx = x + pad
+    # body text fills the remaining width and is vertically centered so cards
+    # never look half-empty
+    _add_text(slide, tx, y + int(pad * 0.5), x + w - tx - pad, h - pad, text,
+              _fit(15, text, 52), text_color, align=PP_ALIGN.LEFT,
+              font=spec["fonts"]["body"], middle=True)
 
 
 def _draw_facts(slide, x, y, w, h, facts, stats, spec, cols):
@@ -182,10 +189,15 @@ def _draw_facts(slide, x, y, w, h, facts, stats, spec, cols):
     gap = int(min(w, h) * 0.04)
     cw = (w - (cols - 1) * gap) // cols
     ch = (h - (rows - 1) * gap) // rows
+    # cap card height so few-item layouts don't balloon into empty boxes;
+    # then center the whole stack vertically in the region
+    ch = min(ch, int(cw * 0.42) if cols == 1 else int(cw * 0.9))
+    total = rows * ch + (rows - 1) * gap
+    y0 = y + max(0, (h - total) // 2)
     for i, fact in enumerate(facts):
         r, c = divmod(i, cols)
         cx = x + c * (cw + gap)
-        cy = y + r * (ch + gap)
+        cy = y0 + r * (ch + gap)
         stat = stats[i] if i < len(stats) and str(stats[i]).strip() else str(i + 1)
         _card(slide, cx, cy, cw, ch, spec, stat, fact)
 
@@ -369,16 +381,20 @@ def render(spec: dict, content: dict, image: Path | None, orientation: str, out_
         _add_rect(slide, spine_x - 15000, top, 30000, bottom - top - int((bottom - top) / max(n, 1) * 0.35),
                   pal["accent"])
         row = (bottom - top) // max(n, 1)
-        badge = int(min(row * 0.6, w * 0.09))
+        badge = int(min(row * 0.42, w * 0.09))
+        card_h = min(int(row * 0.62), int((w - m - spine_x - badge) * 0.26))
         for i, fact in enumerate(facts):
-            cy = top + i * row
-            _add_auto_shape(slide, "ellipse", spine_x - badge // 2, cy, badge, badge, pal["accent"])
-            _add_text(slide, spine_x - badge // 2, cy + int(badge * 0.2), badge, int(badge * 0.6),
-                      str(i + 1), 14, _readable(pal["accent"]), bold=True, align=PP_ALIGN.CENTER,
-                      font=spec["fonts"]["heading"])
+            cy = top + i * row + (row - card_h) // 2
+            node_y = cy + (card_h - badge) // 2
+            _add_auto_shape(slide, "ellipse", spine_x - badge // 2, node_y, badge, badge, pal["accent"])
+            _add_text(slide, spine_x - badge // 2, node_y, badge, badge, str(i + 1),
+                      16, _readable(pal["accent"]), bold=True, align=PP_ALIGN.CENTER,
+                      font=spec["fonts"]["heading"], wrap=False, middle=True)
             card_x = spine_x + badge
-            _card(slide, card_x, cy, w - m - card_x, int(row * 0.85), spec,
-                  stats[i] if i < len(stats) else str(i + 1), fact)
+            # node numbers the step; card shows the stat as a small inline badge + text
+            _card(slide, card_x, cy, w - m - card_x, card_h, spec,
+                  stats[i] if i < len(stats) else "", fact,
+                  show_badge=bool(stats[i]) if i < len(stats) else False)
         _draw_cta(slide, m, int(h * 0.88), w - 2 * m, int(h * 0.08), content["cta"], spec)
 
     elif arch == "poster_frame":
