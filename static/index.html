@@ -189,13 +189,18 @@ document.getElementById('form').onsubmit = async (e) => {
         orientation: document.querySelector('input[name=orientation]:checked').value,
       }),
     });
-    const body = await resp.json();
+    const raw = await resp.text();
+    let body;
+    try { body = JSON.parse(raw); } catch { body = { detail: raw || ('HTTP ' + resp.status) }; }
     if (resp.status === 401) {
       result.textContent = 'Connect Canva first.';
       connect.hidden = false;
       return;
     }
-    if (!resp.ok) { result.textContent = 'Error: ' + (body.detail ?? resp.status); return; }
+    if (!resp.ok || !body.options) {
+      result.textContent = 'Error: ' + (body.detail ?? resp.status);
+      return;
+    }
     const renderOption = (opt, i) => {
       const c = opt.content;
       const editUrl = opt.edit_url && opt.edit_url.startsWith('https://') ? opt.edit_url : null;

@@ -203,7 +203,7 @@ def _make_option(variant: dict, spec: dict, orientation: str, brand_block: str) 
     pptx_download = None
     try:
         edit_url = canva.import_design(settings, pptx, variant["headline"])
-    except canva.CanvaError as e:
+    except Exception as e:  # CanvaError or any transport/parse failure
         warnings.append(f"Canva import failed ({e}) — download the PPTX instead.")
         pptx_download = f"/api/download/{pptx.name}"
 
@@ -222,7 +222,16 @@ def _make_option(variant: dict, spec: dict, orientation: str, brand_block: str) 
 def create_poster(req: PosterRequest):
     if not settings.token_path.exists():
         raise HTTPException(401, "Canva not connected — click Connect Canva first")
+    try:
+        return _generate_posters(req)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # never leak a plain-text 500 — the UI expects JSON
+        raise HTTPException(502, f"Poster generation failed: {e}")
 
+
+def _generate_posters(req: PosterRequest) -> dict:
     kit = brand.load()
     brand_block = brand.prompt_block(kit)
     docs = knowledge.retrieve(req.topic)
@@ -232,8 +241,11 @@ def create_poster(req: PosterRequest):
 
     # Creative director brainstorms fresh, topic-specific angles each run.
     angles = director.brainstorm_angles(req.topic, settings)
-    variants = content.generate(req.topic, settings, knowledge_docs=docs,
-                                angles=angles, brand_block=brand_block)
+    try:
+        variants = content.generate(req.topic, settings, knowledge_docs=docs,
+                                    angles=angles, brand_block=brand_block)
+    except ValueError as e:
+        raise HTTPException(502, f"Could not write poster copy for this topic ({e}). Try rephrasing the topic.")
 
     base_orientation = "portrait" if req.orientation == "both" else req.orientation
     # Art director selects the best template recipe per concept from a diverse
