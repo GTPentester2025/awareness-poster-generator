@@ -11,7 +11,7 @@ from pathlib import Path
 LIBRARY_PATH = Path(__file__).resolve().parent.parent / "data" / "design_library.json"
 
 CARD_STYLES = ["filled", "soft_shadow", "outline"]
-HEADER_STYLES = ["block", "underline", "badge"]
+HEADER_STYLES = ["block", "underline", "block", "underline", "badge"]
 MOTIFS = ["dots", "rings", "stripes", "none"]
 
 _LIBRARY: dict | None = None

@@ -25,7 +25,7 @@ Return ONLY JSON:
       "headline": "punchy title, max 60 chars",
       "subheadline": "supporting line, max 120 chars",
       "points": [
-        {"stat": "<very short label: a number, %, or 1-3 word hook, max 12 chars>",
+        {"stat": "<a PUNCHY badge, max 8 chars: prefer a number/percent/figure like '61%', '16,500', '$932M', '72h', '1 in 3'. If the point has no number, use a 1-word tag like 'Myth', 'Fact', 'Tip'. NEVER a phrase.>",
          "text": "<the point itself, one sentence, max 140 chars>"}
       ],
       "cta": "call to action, max 80 chars",
@@ -68,7 +68,7 @@ def validate_variant(v: dict) -> dict:
             raise ValueError("point must be an object")
         text = _txt(p.get("text"), 140, "point.text")
         stat = p.get("stat")
-        stat = stat.strip()[:12] if isinstance(stat, str) and stat.strip() else str(len(clean_points) + 1)
+        stat = stat.strip()[:10] if isinstance(stat, str) and stat.strip() else str(len(clean_points) + 1)
         clean_points.append({"stat": stat, "text": text})
     v["points"] = clean_points
     sources = v.get("sources")

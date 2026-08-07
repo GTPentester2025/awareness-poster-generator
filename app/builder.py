@@ -135,12 +135,13 @@ def _draw_headline(slide, x, y, w, h, text, spec, color, size_pt, align="left", 
                   pal["bg"], transparency_pct=18)
     if hs == "underline":
         _add_rect(slide, int(x), int(y + h * 0.92), int(w * 0.32), max(int(h * 0.05), 30000), pal["accent"])
-    elif hs == "block":
+    elif hs == "badge":
+        # small kicker bar ABOVE the headline — never a box behind the words
+        _add_rect(slide, int(x), int(y - h * 0.14), int(w * 0.16), max(int(h * 0.05), 30000), pal["accent"])
+    else:  # block (default): accent rule to the left of the headline
         _add_rect(slide, int(x), int(y + h * 0.05), int(w * 0.02), int(h * 0.8), pal["accent"])
         x = x + int(w * 0.045)
         w = w - int(w * 0.045)
-    elif hs == "badge":
-        _rounded(slide, int(x), int(y), int(w * 0.28), int(h * 0.22), pal["accent"])
     _add_text(slide, int(x), int(y), int(w), int(h), text, _fit(size_pt, text, 26), color,
               bold=True, align=_ALIGN_MAP.get(align, PP_ALIGN.LEFT), font=spec["fonts"]["heading"])
 
@@ -156,14 +157,20 @@ def _badge_w(badge_h, stat) -> int:
 
 def _stat_badge(slide, x, y, badge_h, stat, accent, heading_font):
     """Draw a stat chip sized to its content; circle only for a single char,
-    otherwise a rounded pill wide enough for the text. Returns chip width."""
-    stat = str(stat)
+    otherwise a rounded pill. Long stats are truncated and the font is scaled
+    to the chip width so text is always a single, contained line."""
+    stat = str(stat).strip()
+    if len(stat) > 10:  # stats are meant to be punchy — clip label-like values
+        stat = stat[:10].rstrip()
     bw = _badge_w(badge_h, stat)
     if len(stat) <= 1:
         _add_auto_shape(slide, "ellipse", x, y, bw, badge_h, accent)
     else:
         _rounded(slide, x, y, bw, badge_h, accent)
-    stat_pt = max(9, min(15, int(badge_h / 12700 * 0.4)))
+    # font must fit BOTH the chip height and its width
+    by_height = int(badge_h / 12700 * 0.4)
+    by_width = int(bw / 12700 / max(1, len(stat)) * 1.5)
+    stat_pt = max(8, min(15, by_height, by_width))
     _add_text(slide, x, y, bw, badge_h, stat, stat_pt, _readable(accent),
               bold=True, align=PP_ALIGN.CENTER, font=heading_font, wrap=False, middle=True)
     return bw
@@ -316,8 +323,8 @@ def render(spec: dict, content: dict, image: Path | None, orientation: str, out_
         ih = int(h * 0.44)
         if has_img:
             _pic_cover(slide, image, 0, 0, w, ih)
-            _scrim(slide, 0, 0, w, ih, pal["bg"], 0.35)
-            _scrim(slide, 0, int(ih * 0.45), w, int(ih * 0.55), pal["bg"], 0.45)
+            # lighter top scrim keeps the image visible; stronger only under text
+            _scrim(slide, 0, int(ih * 0.55), w, int(ih * 0.45), pal["bg"], 0.5)
             head_color = "#FFFFFF"
         else:
             _add_rect(slide, 0, 0, w, ih, pal["accent"])
@@ -383,10 +390,14 @@ def render(spec: dict, content: dict, image: Path | None, orientation: str, out_
             _pic_cover(slide, image, 0, 0, w, h)
             _scrim(slide, 0, 0, w, h, pal["bg"], 0.68)
         base_color = "#FFFFFF" if has_img else _readable(pal["bg"])
-        lead = stats[0] if stats else "!"
-        _add_text(slide, m, int(h * 0.05), w - 2 * m, int(h * 0.2), str(lead), 110 if not landscape else 90,
-                  pal["accent"], bold=True, align=PP_ALIGN.LEFT, font=spec["fonts"]["heading"])
-        _draw_headline(slide, m, int(h * 0.26), w - 2 * m, int(h * 0.12), content["headline"],
+        # hero stat: a single short token only, never a phrase that could wrap
+        lead = str(stats[0]).split()[0] if stats and str(stats[0]).strip() else "!"
+        lead = lead[:8]
+        hero_pt = (110 if len(lead) <= 5 else 78) if not landscape else 84
+        _add_text(slide, m, int(h * 0.05), w - 2 * m, int(h * 0.19), lead, hero_pt,
+                  pal["accent"], bold=True, align=PP_ALIGN.LEFT, font=spec["fonts"]["heading"],
+                  wrap=False, middle=True)
+        _draw_headline(slide, m, int(h * 0.27), w - 2 * m, int(h * 0.12), content["headline"],
                        spec, base_color, 38 if not landscape else 32, "left")
         _add_text(slide, m, int(h * 0.39), w - 2 * m, int(h * 0.05), content["subheadline"],
                   16, base_color, font=spec["fonts"]["body"])
