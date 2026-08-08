@@ -32,6 +32,13 @@ def reload_settings() -> None:
 class PosterRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=300)
     orientation: Literal["portrait", "landscape", "both"] = "portrait"
+    num_options: int = Field(default=3, ge=1, le=6)
+    angles: list[str] | None = None  # user-chosen angles override the brief's
+
+
+class AnglesRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=300)
+    n: int = Field(default=6, ge=3, le=10)
 
 
 class ConfigRequest(BaseModel):
@@ -52,18 +59,32 @@ def _plan_uses_image(spec: dict) -> bool:
     return spec.get("background_style") == "image"
 
 
-def _pick_angles(angle_titles: list[str], topic: str) -> list[str]:
-    """Choose three distinct grounded angles, rotating by topic so runs vary."""
+_GENERIC_ANGLES = ["the warning signs", "simple steps that help", "why it matters to you",
+                   "what most people get wrong", "the numbers that matter", "spot it before it's too late"]
+
+
+def _pad_angles(angles: list[str], count: int) -> list[str]:
+    out = list(angles)
+    for g in _GENERIC_ANGLES:
+        if len(out) >= count:
+            break
+        if g not in out:
+            out.append(g)
+    return out[:count]
+
+
+def _pick_angles(angle_titles: list[str], topic: str, count: int = 3) -> list[str]:
+    """Choose `count` distinct grounded angles, rotating by topic so runs vary."""
     seen, uniq = set(), []
     for a in angle_titles:
         k = a.lower()
         if k not in seen:
             seen.add(k)
             uniq.append(a)
-    if len(uniq) <= 3:
-        return (uniq + ["the warning signs", "simple steps that help", "why it matters to you"])[:3]
+    if len(uniq) <= count:
+        return _pad_angles(uniq, count)
     start = abs(hash(topic)) % len(uniq)
-    return [uniq[(start + i) % len(uniq)] for i in range(3)]
+    return [uniq[(start + i) % len(uniq)] for i in range(count)]
 
 
 def _brand_moods(kit: dict) -> list[str]:
@@ -109,6 +130,19 @@ def status():
 @app.get("/api/config")
 def get_config():
     return _config_status()
+
+
+@app.post("/api/angles")
+def suggest_angles(req: AnglesRequest):
+    """Brainstorm grounded angle options for a topic so the user can pick which
+    ones to turn into posters (the 'generate more angles' feature)."""
+    docs = knowledge.retrieve(req.topic)
+    fresh = research.web_research(req.topic, settings)
+    if fresh:
+        docs = docs + [fresh]
+    brief = curation.synthesize_brief(req.topic, docs, settings, n_angles=req.n)
+    return {"grounded": brief["grounded"],
+            "angles": [{"title": a["title"], "rationale": a["rationale"]} for a in brief["angles"]]}
 
 
 @app.get("/api/brand")
@@ -253,15 +287,20 @@ def _generate_posters(req: PosterRequest) -> dict:
     if fresh:
         docs = docs + [fresh]
 
+    count = req.num_options
     # Curate: synthesize a grounded research brief + distinct angles from the
-    # retrieved knowledge and live research, then pick three angles to explore.
-    brief_obj = curation.synthesize_brief(req.topic, docs, settings)
-    angle_titles = [a["title"] for a in brief_obj["angles"]]
-    angles = _pick_angles(angle_titles, req.topic)
+    # retrieved knowledge and live research. Honor user-chosen angles if given.
+    brief_obj = curation.synthesize_brief(req.topic, docs, settings, n_angles=max(5, count + 2))
+    if req.angles:
+        angles = [a.strip()[:60] for a in req.angles if a.strip()][:count]
+        angles = _pad_angles(angles, count)
+    else:
+        angle_titles = [a["title"] for a in brief_obj["angles"]]
+        angles = _pick_angles(angle_titles, req.topic, count)
     try:
         variants, review = content.generate_reviewed(
             req.topic, settings, knowledge_docs=docs, angles=angles,
-            brand_block=brand_block, brief=brief_obj["synthesis"])
+            brand_block=brand_block, brief=brief_obj["synthesis"], count=count)
     except ValueError as e:
         raise HTTPException(502, f"Could not write poster copy for this topic ({e}). Try rephrasing the topic.")
 

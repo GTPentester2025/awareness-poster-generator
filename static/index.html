@@ -89,8 +89,16 @@
       <label><input type="radio" name="orientation" value="portrait" checked> A4 portrait</label>
       <label><input type="radio" name="orientation" value="landscape"> A4 landscape</label>
       <label><input type="radio" name="orientation" value="both"> Both</label>
+    </div>
+    <div class="row">
+      <label>Options: <input id="num-options" type="number" min="1" max="6" value="3" style="width:3.5rem;padding:0.3rem;border:2px solid var(--ink);"></label>
+      <button id="suggest" type="button">Suggest angles</button>
       <button id="go" type="submit">Generate posters</button>
       <button id="connect" type="button" hidden>Connect Canva</button>
+    </div>
+    <div id="angles" hidden style="border:2px solid var(--ink);background:#fff;padding:0.6rem 1rem;">
+      <p class="hint" style="margin:0 0 0.4rem;">Tick the angles to turn into posters (leave all unticked to auto-pick):</p>
+      <div id="angle-list"></div>
     </div>
   </form>
   <div id="result"></div>
@@ -176,6 +184,26 @@ document.getElementById('cfg-save').onclick = async () => {
 
 const esc = (s) => String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 
+document.getElementById('suggest').onclick = async () => {
+  const topic = document.getElementById('topic').value.trim();
+  if (topic.length < 3) { alert('Enter a topic first.'); return; }
+  const btn = document.getElementById('suggest');
+  btn.disabled = true; btn.textContent = 'Thinking…';
+  try {
+    const resp = await fetch('/api/angles', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic, n: 8 }),
+    });
+    const body = await resp.json();
+    const list = document.getElementById('angle-list');
+    list.innerHTML = (body.angles || []).map((a, i) =>
+      `<label style="display:block;margin:0.2rem 0;"><input type="checkbox" class="angle-cb" value="${esc(a.title)}"> <strong>${esc(a.title)}</strong>${a.rationale ? ` — <span class="hint">${esc(a.rationale)}</span>` : ''}</label>`
+    ).join('') || '<p class="hint">No angles returned.</p>';
+    document.getElementById('angles').hidden = false;
+  } catch (e) { alert('Failed: ' + e); }
+  finally { btn.disabled = false; btn.textContent = 'Suggest angles'; }
+};
+
 document.getElementById('form').onsubmit = async (e) => {
   e.preventDefault();
   go.disabled = true;
@@ -187,6 +215,8 @@ document.getElementById('form').onsubmit = async (e) => {
       body: JSON.stringify({
         topic: document.getElementById('topic').value,
         orientation: document.querySelector('input[name=orientation]:checked').value,
+        num_options: parseInt(document.getElementById('num-options').value, 10) || 3,
+        angles: Array.from(document.querySelectorAll('.angle-cb:checked')).map(c => c.value),
       }),
     });
     const raw = await resp.text();

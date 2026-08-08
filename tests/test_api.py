@@ -20,12 +20,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main.history, "remember", lambda specs, path=None: None)
     monkeypatch.setattr(main.brand, "DEFAULT_PATH", tmp_path / "brand.json")
     monkeypatch.setattr(main.curation, "synthesize_brief",
-                        lambda topic, docs, s, client=None: {
+                        lambda topic, docs, s, n_angles=5, client=None: {
                             "synthesis": "brief", "grounded": bool(docs),
-                            "angles": [{"title": "angle a", "rationale": "", "key_facts": []},
-                                       {"title": "angle b", "rationale": "", "key_facts": []},
-                                       {"title": "angle c", "rationale": "", "key_facts": []},
-                                       {"title": "angle d", "rationale": "", "key_facts": []}]})
+                            "angles": [{"title": f"angle {i}", "rationale": "", "key_facts": []}
+                                       for i in range(max(4, n_angles))]})
     monkeypatch.setattr(main.recipes, "shortlist", lambda moods, k=15, seed=0: [{"archetype": "hero_top"}])
     monkeypatch.setattr(main.director, "select_recipes",
                         lambda variants, pool, s, client=None: [{"recipe": {}, "image_subject": ""} for _ in variants])
@@ -56,7 +54,7 @@ def _happy_mocks(monkeypatch, tmp_path):
     fake_pptx = tmp_path / "poster_x.pptx"
     fake_pptx.write_bytes(b"pptx")
     monkeypatch.setattr(main.content, "generate_reviewed",
-                        lambda topic, s, knowledge_docs=None, angles=None, brand_block="", brief="", client=None: ([dict(v) for v in VARIANTS], {"score": 92, "feedback": []}))
+                        lambda topic, s, knowledge_docs=None, angles=None, brand_block="", brief="", count=3, client=None: ([dict(v) for v in VARIANTS][:count], {"score": 92, "feedback": []}))
     specs_iter = iter([dict(x) for x in SPECS])
     monkeypatch.setattr(main.recipes, "recipe_to_spec", lambda recipe, subject="": next(specs_iter))
     monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
@@ -129,7 +127,7 @@ def test_poster_direction_failure_falls_back_to_single(client, monkeypatch, tmp_
     fake_pptx = tmp_path / "poster_fb.pptx"
     fake_pptx.write_bytes(b"pptx")
     monkeypatch.setattr(main.content, "generate_reviewed",
-                        lambda topic, s, knowledge_docs=None, angles=None, brand_block="", brief="", client=None: ([dict(v) for v in VARIANTS], {"score": 90, "feedback": []}))
+                        lambda topic, s, knowledge_docs=None, angles=None, brand_block="", brief="", count=3, client=None: ([dict(v) for v in VARIANTS][:count], {"score": 90, "feedback": []}))
 
     def boom(*a, **kw):
         raise ValueError("recipe selection failed")
@@ -142,6 +140,32 @@ def test_poster_direction_failure_falls_back_to_single(client, monkeypatch, tmp_
     assert len(body["options"]) == 1
     assert body["options"][0]["edit_url"] == "https://canva.com/edit/fb"
     assert any("art direction" in w.lower() for w in body["options"][0]["warnings"])
+
+
+def test_num_options_controls_count(client, monkeypatch, tmp_path):
+    _connect(tmp_path)
+    fake_pptx = tmp_path / "poster_n.pptx"
+    fake_pptx.write_bytes(b"pptx")
+    monkeypatch.setattr(main.content, "generate_reviewed",
+                        lambda topic, s, knowledge_docs=None, angles=None, brand_block="", brief="", count=3, client=None: ([dict(v) for v in VARIANTS][:count], {"score": 90, "feedback": []}))
+    specs_iter = iter([dict(x) for x in SPECS])
+    monkeypatch.setattr(main.recipes, "recipe_to_spec", lambda recipe, subject="": next(specs_iter))
+    monkeypatch.setattr(main.artwork, "generate", lambda p, o, s, client=None: None)
+    monkeypatch.setattr(main.builder, "render", lambda spec, variant, i, o, d: fake_pptx)
+    monkeypatch.setattr(main.canva, "import_design", lambda s, p, t, **kw: "https://canva.com/edit/n")
+    body = client.post("/api/posters", json={"topic": "x", "num_options": 2}).json()
+    assert len(body["options"]) == 2
+
+
+def test_num_options_out_of_range_rejected(client):
+    r = client.post("/api/posters", json={"topic": "x", "num_options": 99})
+    assert r.status_code == 422
+
+
+def test_suggest_angles(client, monkeypatch):
+    body = client.post("/api/angles", json={"topic": "phishing", "n": 6}).json()
+    assert "angles" in body and len(body["angles"]) >= 4
+    assert all("title" in a for a in body["angles"])
 
 
 def test_knowledge_titles_reported(client, monkeypatch, tmp_path):

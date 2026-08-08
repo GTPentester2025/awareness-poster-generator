@@ -20,16 +20,16 @@ Produce a tight brief and distinct angles GROUNDED in the material above (or, if
 material is thin, in well-established facts — mark grounded=false then).
 
 Return ONLY JSON:
-{{
+{
   "synthesis": "4-6 sentence factual synthesis of what matters about this topic",
   "grounded": true|false,
   "angles": [
-    {{"title": "<short distinct framing, max 60 chars>",
+    {"title": "<short distinct framing, max 60 chars>",
       "rationale": "<one line: why this angle matters / what it teaches>",
-      "key_facts": ["<1-3 concrete facts this angle would use>"]}}
+      "key_facts": ["<1-3 concrete facts this angle would use>"]}
   ]
-}}
-Give 4-5 angles, each genuinely different in framing (not rewordings). Angles
+}
+Give {n} angles, each genuinely different in framing (not rewordings). Angles
 should be specific and human, e.g. 'what a real bank email never does', not
 generic buckets like 'precautions'."""
 
@@ -47,8 +47,10 @@ def _fallback(topic: str) -> dict:
     }
 
 
-def synthesize_brief(topic: str, docs: list[dict], settings: Settings, client=None) -> dict:
-    """Return {synthesis, grounded, angles:[{title,rationale,key_facts}]}."""
+def synthesize_brief(topic: str, docs: list[dict], settings: Settings, n_angles: int = 5,
+                     client=None) -> dict:
+    """Return {synthesis, grounded, angles:[{title,rationale,key_facts}]}.
+    n_angles: how many distinct angles to brainstorm (for the "more angles" UI)."""
     if client is None:
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
@@ -59,11 +61,12 @@ def synthesize_brief(topic: str, docs: list[dict], settings: Settings, client=No
     else:
         material = "MATERIAL: none retrieved — use only well-established facts and set grounded=false."
 
+    prompt = BRIEF_PROMPT.replace("{topic}", topic).replace("{material}", material).replace("{n}", str(max(3, n_angles)))
     try:
         resp = client.chat.completions.create(
             model=settings.openai_text_model,
             response_format={"type": "json_object"},
-            messages=[{"role": "user", "content": BRIEF_PROMPT.format(topic=topic, material=material)}],
+            messages=[{"role": "user", "content": prompt}],
         )
         data = json.loads(resp.choices[0].message.content)
         angles = data.get("angles")

@@ -13,9 +13,19 @@ ANGLES = {"precautions", "red_flags", "impact", "myths_vs_facts", "stats", "chec
 MIN_POINTS, MAX_POINTS = 3, 6
 
 SYSTEM_PROMPT = """You are an expert public-awareness copywriter. For the given topic,
-write THREE clearly different poster concepts. Use EXACTLY the three angles the
-user assigns (one per concept, in order). Vary the number of points between
-concepts (3 to 6 points each) — do NOT give every concept the same count.
+write {count} clearly different poster concepts. Use EXACTLY the assigned angles
+(one per concept, in order). Vary the number of points between concepts (3 to 6
+points each) — do NOT give every concept the same count.
+
+PRECISION RULES (critical — vague copy is rejected):
+- Every point must be CONCRETE and specific. Prefer a real number, percentage,
+  timeframe, or a named concrete action. No filler adjectives ("very", "important",
+  "crucial"), no empty motivation ("stay safe", "be aware") as a point.
+- Facts must be accurate and, when reference material is given, taken from it.
+  Never invent statistics. If you have no number for a point, make it a specific
+  ACTION ("Turn on MFA in Settings > Security"), not a platitude.
+- Headlines are punchy and specific (name the risk or the number), max 8 words.
+- Each point's text is one tight sentence, no throat-clearing.
 
 Return ONLY JSON:
 {
@@ -31,12 +41,12 @@ Return ONLY JSON:
       "cta": "call to action, max 80 chars",
       "sources": ["<short source names you actually used, e.g. 'NIST CSF 2.0', 'GDPR Art. 33'>"]
     },
-    ... exactly 3 variants ...
+    ... exactly {count} variants ...
   ]
 }
 
 Rules:
-- The three variants must differ in angle, structure, and tone — not rewordings.
+- The variants must differ in angle, structure, and tone — not rewordings.
 - Facts must be accurate. If REFERENCE MATERIAL is provided below, prefer its
   facts verbatim-ish and cite those sources in "sources". Never invent statistics:
   without reference material use only well-established facts and leave "sources" empty
@@ -77,29 +87,30 @@ def validate_variant(v: dict) -> dict:
     return v
 
 
-def validate_content(data: dict) -> dict:
+def validate_content(data: dict, count: int = 3) -> dict:
     variants = data.get("variants") if isinstance(data, dict) else None
-    if not isinstance(variants, list) or len(variants) != 3:
-        raise ValueError("need exactly 3 variants")
+    if not isinstance(variants, list) or len(variants) != count:
+        raise ValueError(f"need exactly {count} variants")
     data["variants"] = [validate_variant(v) for v in variants]
     angles = [v["angle"].lower() for v in data["variants"]]
-    if len(set(angles)) < 2:
+    if count >= 2 and len(set(angles)) < 2:
         raise ValueError("variants must use different angles")
     return data
 
 
 def generate(topic: str, settings: Settings, knowledge_docs: list[dict] | None = None,
              angles: list[str] | None = None, brand_block: str = "", brief: str = "",
-             feedback: list[str] | None = None, client=None) -> list[dict]:
-    """Returns 3 validated content variants. Retries once, then raises ValueError.
-    `angles`: three assigned angles (grounded, from curation.synthesize_brief).
+             feedback: list[str] | None = None, count: int = 3, client=None) -> list[dict]:
+    """Returns `count` validated content variants. Retries once, then raises.
+    `angles`: assigned angles (grounded, from curation.synthesize_brief).
     `brand_block`: serialized brand kit steering tone. `brief`: research
     synthesis to ground copy. `feedback`: reviewer notes from a prior draft."""
     if client is None:
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
 
-    user = _build_user_prompt(topic, angles, brand_block, knowledge_docs, brief, feedback)
+    system = SYSTEM_PROMPT.replace("{count}", str(count))
+    user = _build_user_prompt(topic, angles, brand_block, knowledge_docs, brief, feedback, count)
 
     last_err = None
     for _ in range(2):
@@ -107,25 +118,25 @@ def generate(topic: str, settings: Settings, knowledge_docs: list[dict] | None =
             model=settings.openai_text_model,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
         )
         try:
-            return validate_content(json.loads(resp.choices[0].message.content))["variants"]
+            return validate_content(json.loads(resp.choices[0].message.content), count)["variants"]
         except (ValueError, json.JSONDecodeError) as e:
             last_err = e
     raise ValueError(f"content generation failed: {last_err}")
 
 
-def _build_user_prompt(topic, angles, brand_block, knowledge_docs, brief, feedback) -> str:
+def _build_user_prompt(topic, angles, brand_block, knowledge_docs, brief, feedback, count=3) -> str:
     user = f"Awareness poster topic: {topic}"
     if brief:
         user += f"\n\nRESEARCH BRIEF (ground the copy in this):\n{brief}"
     if angles:
-        user += ("\n\nUse EXACTLY these three angles, one per concept in order — keep each "
+        user += (f"\n\nUse EXACTLY these {count} angles, one per concept in order — keep each "
                  "concept's framing true to its angle:\n"
-                 + "\n".join(f"{i+1}. {a}" for i, a in enumerate(angles[:3])))
+                 + "\n".join(f"{i+1}. {a}" for i, a in enumerate(angles[:count])))
     if brand_block:
         user += f"\n\nBRAND (match this voice; mention the org naturally in the CTA if it fits):\n{brand_block}"
     if knowledge_docs:
@@ -177,7 +188,7 @@ def review(variants: list[dict], topic: str, settings: Settings, client=None) ->
 
 
 def generate_reviewed(topic: str, settings: Settings, knowledge_docs=None, angles=None,
-                      brand_block="", brief="", max_rounds: int = 2, client=None):
+                      brand_block="", brief="", count: int = 3, max_rounds: int = 3, client=None):
     """Generate → review → rework with full feedback history until score >=
     PASS_SCORE or rounds exhausted. Returns (variants, review_dict|None)."""
     history: list[str] = []
@@ -185,7 +196,7 @@ def generate_reviewed(topic: str, settings: Settings, knowledge_docs=None, angle
     best_review = None
     for _ in range(max_rounds):
         variants = generate(topic, settings, knowledge_docs=knowledge_docs, angles=angles,
-                            brand_block=brand_block, brief=brief,
+                            brand_block=brand_block, brief=brief, count=count,
                             feedback=history or None, client=client)
         verdict = review(variants, topic, settings, client=client)
         if verdict is None:
