@@ -81,9 +81,10 @@ def test_poster_returns_three_options(client, monkeypatch, tmp_path):
     assert r.status_code == 200
     assert len(body["options"]) == 3
     archetypes = [o["archetype"] for o in body["options"]]
-    assert archetypes == ["hero_top", "steps_path", "big_number"]
+    assert len(set(archetypes)) == 3  # distinct layouts (shape-matched)
     assert body["options"][0]["edit_url"] == "https://canva.com/edit/d1"
     assert body["options"][1]["content"]["angle"] == "impact"
+    assert all(isinstance(o["lint_score"], int) for o in body["options"])
     # third spec wanted an image; artwork mock returned None → warning on that option only
     assert any("image" in w.lower() for w in body["options"][2]["warnings"])
     assert body["options"][0]["warnings"] == []

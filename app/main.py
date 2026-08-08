@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app import (artwork, brand, builder, canva, content, critique, curation, design, director,
-                 envfile, history, knowledge, recipes, research)
+                 envfile, history, knowledge, linter, recipes, research)
 from app.config import load_settings
 
 app = FastAPI(title="Awareness Poster Generator")
@@ -260,6 +260,7 @@ def _make_option(variant: dict, spec: dict, orientation: str, brand_block: str) 
         "archetype": spec.get("archetype"),
         "orientation": orientation,
         "quality_score": score,
+        "lint_score": spec.get("lint_score"),
         "edit_url": edit_url,
         "warnings": warnings,
         "pptx_download": pptx_download,
@@ -312,12 +313,27 @@ def _generate_posters(req: PosterRequest) -> dict:
         pool = recipes.shortlist(_brand_moods(kit), k=15, seed=seed)
         selections = director.select_recipes(variants, pool, settings)
         specs = []
-        for sel in selections:
+        used_arch: set[str] = set()
+        for variant, sel in zip(variants, selections):
             spec = recipes.recipe_to_spec(sel["recipe"], sel.get("image_subject", ""))
+            # template-first shape match: correct a clear mismatch, and keep
+            # every option's layout distinct from its siblings.
+            prefs = linter.preferred_archetypes(variant)
+            if prefs and spec["archetype"] not in prefs:
+                alt = next((p for p in prefs if p not in used_arch), None)
+                if alt:
+                    spec["archetype"] = alt
+            if spec["archetype"] in used_arch:  # dedupe siblings
+                alt = next((p for p in prefs if p not in used_arch), None) \
+                    or next((a for a in sorted(design.ARCHETYPES) if a not in used_arch), spec["archetype"])
+                spec["archetype"] = alt
+            used_arch.add(spec["archetype"])
             if kit.get("colors"):
                 spec["palette"]["accent"] = kit["colors"][0]
                 if len(kit["colors"]) > 1:
                     spec["palette"]["bg"] = kit["colors"][1]
+            # deterministic contrast gate: repair the palette before rendering
+            spec, spec["lint_score"], _ = linter.audit_and_repair(spec)
             specs.append(spec)
     except Exception:
         specs = None
