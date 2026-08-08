@@ -107,13 +107,14 @@ def get_access_token(settings: Settings, http=None) -> str:
     return refreshed["access_token"]
 
 
-def _import_metadata(title: str) -> str:
+def _import_metadata(title: str, mime_type: str = PPTX_MIME) -> str:
     title_b64 = base64.b64encode(title[:50].encode()).decode()
-    return json.dumps({"title_base64": title_b64, "mime_type": PPTX_MIME})
+    return json.dumps({"title_base64": title_b64, "mime_type": mime_type})
 
 
 def import_design(settings: Settings, pptx: Path, title: str, http=None,
-                  poll_interval: float = 2.0, timeout: float = 60.0) -> str:
+                  poll_interval: float = 2.0, timeout: float = 60.0,
+                  mime_type: str = PPTX_MIME) -> str:
     if http is None:
         import httpx
         http = httpx.Client(timeout=30)
@@ -121,7 +122,7 @@ def import_design(settings: Settings, pptx: Path, title: str, http=None,
     headers = {
         "Authorization": f"Bearer {access}",
         "Content-Type": "application/octet-stream",
-        "Import-Metadata": _import_metadata(title),
+        "Import-Metadata": _import_metadata(title, mime_type),
     }
     resp = http.post(IMPORT_URL, headers=headers, content=pptx.read_bytes())
     resp.raise_for_status()

@@ -9,8 +9,10 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app import (artwork, brand, builder, canva, content, critique, curation, design, director,
-                 envfile, history, knowledge, linter, recipes, research)
+                 envfile, history, knowledge, linter, recipes, research, webrender)
 from app.config import load_settings
+
+PDF_MIME = "application/pdf"
 
 app = FastAPI(title="Awareness Poster Generator")
 settings = load_settings()
@@ -34,6 +36,7 @@ class PosterRequest(BaseModel):
     orientation: Literal["portrait", "landscape", "both"] = "portrait"
     num_options: int = Field(default=3, ge=1, le=6)
     angles: list[str] | None = None  # user-chosen angles override the brief's
+    render_mode: Literal["editable", "premium"] = "editable"
 
 
 class AnglesRequest(BaseModel):
@@ -230,11 +233,36 @@ def _render_and_check(variant: dict, spec: dict, image, orientation: str,
     return pptx, verdict["score"]
 
 
-def _make_option(variant: dict, spec: dict, orientation: str, brand_block: str) -> dict:
-    """Build one poster option end-to-end: image (if styled, with no-text QA)
-    → render → vision critique (retry once on poor score) → import. Never
-    raises — failures degrade into warnings/downloads so siblings still ship."""
+def _premium_option(variant: dict, spec: dict, orientation: str) -> dict:
+    """Browser-render path: LLM writes HTML → Chromium text-layer PDF → Canva
+    import (editable) + PNG preview download. Falls back to the PPTX path on
+    any failure so an option always ships."""
     warnings: list[str] = []
+    try:
+        html = webrender.build_html(variant, spec, orientation, settings)
+        pdf_path, png_path = webrender.render(html, orientation, settings.out_dir)
+    except Exception as e:
+        warnings.append(f"Premium render failed ({e}) — used the editable layout instead.")
+        return _make_option(variant, spec, orientation, "", _warn=warnings)
+
+    edit_url = None
+    download = f"/api/download/{png_path.name}"  # crisp PNG always available
+    try:
+        edit_url = canva.import_design(settings, pdf_path, variant["headline"], mime_type=PDF_MIME, timeout=90)
+    except Exception as e:
+        warnings.append(f"Canva import failed ({e}) — download the PNG/PDF instead.")
+        download = f"/api/download/{pdf_path.name}"
+    return {
+        "content": variant, "archetype": spec.get("archetype"), "orientation": orientation,
+        "quality_score": None, "lint_score": spec.get("lint_score"), "render_mode": "premium",
+        "edit_url": edit_url, "warnings": warnings, "pptx_download": download,
+    }
+
+
+def _make_option(variant: dict, spec: dict, orientation: str, brand_block: str, _warn=None) -> dict:
+    """Editable path: image (if styled) → PPTX render → vision critique (retry
+    once) → Canva import. Never raises — failures degrade to warnings/downloads."""
+    warnings: list[str] = _warn if _warn is not None else []
     image = None
     if _plan_uses_image(spec):
         image = artwork.generate(spec["image_prompt"], orientation, settings)
@@ -261,6 +289,7 @@ def _make_option(variant: dict, spec: dict, orientation: str, brand_block: str) 
         "orientation": orientation,
         "quality_score": score,
         "lint_score": spec.get("lint_score"),
+        "render_mode": "editable",
         "edit_url": edit_url,
         "warnings": warnings,
         "pptx_download": pptx_download,
@@ -361,11 +390,14 @@ def _generate_posters(req: PosterRequest) -> dict:
     orientations = ["portrait", "landscape"] if req.orientation == "both" else [req.orientation]
     jobs = [(variant, dict(spec), o)
             for variant, spec in zip(variants, specs) for o in orientations]
+
+    def _run(job):
+        if req.render_mode == "premium":
+            return _premium_option(job[0], job[1], job[2])
+        return _make_option(job[0], job[1], job[2], brand_block)
+
     with ThreadPoolExecutor(max_workers=4) as pool:
-        options = list(pool.map(
-            lambda job: _make_option(job[0], job[1], job[2], brand_block),
-            jobs,
-        ))
+        options = list(pool.map(_run, jobs))
 
     history.remember(specs)
     return {"options": options, "knowledge_used": [d["title"] for d in docs],

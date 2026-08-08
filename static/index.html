@@ -92,6 +92,12 @@
     </div>
     <div class="row">
       <label>Options: <input id="num-options" type="number" min="1" max="6" value="3" style="width:3.5rem;padding:0.3rem;border:2px solid var(--ink);"></label>
+      <label>Mode:
+        <select id="render-mode" style="font:inherit;padding:0.3rem;border:2px solid var(--ink);">
+          <option value="editable">Editable (PPTX)</option>
+          <option value="premium">Premium (HTML, richer)</option>
+        </select>
+      </label>
       <button id="suggest" type="button">Suggest angles</button>
       <button id="go" type="submit">Generate posters</button>
       <button id="connect" type="button" hidden>Connect Canva</button>
@@ -216,6 +222,7 @@ document.getElementById('form').onsubmit = async (e) => {
         topic: document.getElementById('topic').value,
         orientation: document.querySelector('input[name=orientation]:checked').value,
         num_options: parseInt(document.getElementById('num-options').value, 10) || 3,
+        render_mode: document.getElementById('render-mode').value,
         angles: Array.from(document.querySelectorAll('.angle-cb:checked')).map(c => c.value),
       }),
     });
@@ -245,7 +252,7 @@ document.getElementById('form').onsubmit = async (e) => {
           ${(c.sources && c.sources.length) ? `<p class="hint">Sources: ${c.sources.map(esc).join(' · ')}</p>` : ''}
           ${opt.warnings.map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
           ${editUrl ? `<a class="edit" href="${esc(editUrl)}" target="_blank">Edit in Canva →</a>` : ''}
-          ${downloadUrl ? `<a class="edit" href="${esc(downloadUrl)}">Download PPTX</a>` : ''}
+          ${downloadUrl ? `<a class="edit" href="${esc(downloadUrl)}">Download ${downloadUrl.endsWith('.png') ? 'PNG' : downloadUrl.endsWith('.pdf') ? 'PDF' : 'PPTX'}</a>` : ''}
         </section>`;
     };
     const meta = [];
